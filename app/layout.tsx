@@ -2,6 +2,7 @@ import { Plus_Jakarta_Sans } from "next/font/google";
 import "./globals.css";
 import AuthRedirectProvider from "./components/AuthRedirectProvider";
 import Header from "./components/Header"; // 🌟 Імпортуємо шапку сюди
+console.log("layout  is working");
 
 const jakarta = Plus_Jakarta_Sans({
   subsets: ["latin", "cyrillic-ext"],

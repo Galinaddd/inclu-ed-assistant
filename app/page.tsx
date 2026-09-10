@@ -3,27 +3,16 @@
 import React from "react";
 import { HeroTreeGraphic, GoogleBrandIcon } from "./components/graphics/Icons";
 import GoogleAuthButton from "./components/GoogleAuthButton";
-import { createClient } from "./utils/supabase";
+import { createClientConnection } from "./utils/supabase/client"; // Оновлена назва функції
+
 import ExampleSection from "./components/ExampleSection";
 
-export default function LandingPage() {
-  const supabase = createClient();
+import { handleGoogleAuthClick } from "./utils/auth/authService";
 
-  // Швидкий вхід через Google для головної кнопки
-  const handleGoogleLogin = async (e: React.MouseEvent<HTMLButtonElement>) => {
-    e.preventDefault();
-    try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-          redirectTo: `${window.location.origin}/auth/callback`,
-        },
-      });
-      if (error) throw error;
-    } catch (error: any) {
-      alert("Не вдалося запустити вхід через Google: " + error.message);
-    }
-  };
+console.log("app/page is working");
+
+export default function LandingPage() {
+  const supabase = createClientConnection();
 
   return (
     <div className="font-sans tracking-wide selection:bg-sky-200/60 relative overflow-x-hidden">
@@ -53,7 +42,7 @@ export default function LandingPage() {
 
           <div className="w-full sm:w-[400px] flex flex-col items-center">
             {/* Головна кнопка Google входу */}
-            <GoogleAuthButton onClick={handleGoogleLogin} />
+            <GoogleAuthButton onClick={handleGoogleAuthClick} />
 
             <p className="text-xs text-slate-600 font-bold mt-4 text-center w-full bg-slate-200/50 py-1 rounded-md">
               ✨ 5 безкоштовних спроб нараховуються одразу

@@ -3,13 +3,11 @@
 import React, { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { GoogleBrandIcon } from "./graphics/Icons";
-import {
-  signInWithGoogle,
-  signInOrSignUpWithEmail,
-} from "../utils/authService";
+import { signInOrSignUpWithEmail } from "../utils/auth/authService";
 import { useRouter, usePathname } from "next/navigation";
 import Logo from "./graphics/Logo";
 import GoogleAuthButton from "./GoogleAuthButton";
+import { handleGoogleAuthClick } from "../utils/auth/authService";
 
 export default function Header() {
   const router = useRouter();
@@ -19,18 +17,6 @@ export default function Header() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [showEmailForm, setShowEmailForm] = useState(false);
-
-  const handleGoogleLogin = async (e: React.MouseEvent<HTMLButtonElement>) => {
-    e.preventDefault();
-    setLoading(true);
-    try {
-      await signInWithGoogle();
-    } catch (error: any) {
-      alert("Помилка Google Auth: " + error.message);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -94,7 +80,10 @@ export default function Header() {
           className="absolute top-full right-4 left-4 md:left-auto md:right-16 mt-3 max-w-none md:max-w-sm bg-white border-2 border-slate-300 p-5 rounded-2xl shadow-xl animate-in fade-in slide-in-from-top-2 duration-200 z-50"
           role="dialog"
         >
-          <GoogleAuthButton onClick={handleGoogleLogin} disabled={loading} />
+          <GoogleAuthButton
+            onClick={handleGoogleAuthClick}
+            disabled={loading}
+          />
 
           <div className="relative flex py-3 items-center" aria-hidden="true">
             <div className="flex-grow border-t border-slate-200"></div>

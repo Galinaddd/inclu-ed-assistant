@@ -2,7 +2,9 @@
 
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { createClient } from "../utils/supabase";
+import { createClientConnection } from "../utils/supabase/client"; // Оновили імпорт та шлях
+
+console.log("onboarding/page is working");
 
 interface ReferenceItem {
   code?: string;
@@ -13,7 +15,9 @@ interface ReferenceItem {
 
 export default function OnboardingPage() {
   const router = useRouter();
-  const supabase = createClient();
+
+  // Ініціалізуємо ваш клієнтський коннекшн Supabase
+  const supabase = createClientConnection(); // Викликаємо правильну функцію
 
   const [step, setStep] = useState<1 | 2>(1);
   const [loadingRefs, setLoadingRefs] = useState(true);
@@ -192,8 +196,8 @@ export default function OnboardingPage() {
                           </p>
                         </div>
                         {supportLevel === lvl.level_number && (
-                          <span className="text-[10px] font-bold text-emerald-700 shrink-0">
-                            ✓
+                          <span className="text-xs font-bold text-emerald-700">
+                            ✓ Обрано
                           </span>
                         )}
                       </button>
@@ -201,18 +205,16 @@ export default function OnboardingPage() {
                   </div>
                 </div>
 
-                <div className="flex flex-col gap-1 w-full">
-                  <label className="text-[10px] font-black text-slate-500 ml-1">
-                    3. Вік дитини або класу (необов'язково)
+                <div>
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider block mb-1.5 ml-1">
+                    3. Вік дитини (необов'язково):
                   </label>
                   <input
                     type="number"
-                    min={5}
-                    max={18}
-                    placeholder="Наприклад: 8 років"
                     value={childAge}
                     onChange={(e) => setChildAge(e.target.value)}
-                    className="h-9 w-full rounded-xl border-2 border-slate-200 bg-[#FAF9F6] px-3 text-xs font-medium text-slate-900 focus:outline-none"
+                    placeholder="Наприклад: 8"
+                    className="w-full rounded-xl border-2 border-slate-200 bg-slate-50/50 p-3 text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-600 transition-all"
                   />
                 </div>
               </div>
@@ -220,28 +222,14 @@ export default function OnboardingPage() {
           </div>
         )}
 
-        <div className="flex gap-3 w-full mt-6">
-          {step === 2 && (
-            <button
-              type="button"
-              onClick={() => setStep(1)}
-              className="px-4 h-11 bg-white border-2 border-slate-300 hover:bg-slate-50 text-slate-700 font-bold rounded-xl text-xs cursor-pointer"
-            >
-              Назад
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={handleNextStep}
-            disabled={
-              loadingRefs ||
-              (step === 1 ? !role : !childProfile || !supportLevel)
-            }
-            className="flex-1 inline-flex justify-center items-center px-6 h-11 bg-emerald-700 hover:bg-emerald-800 text-white font-black rounded-xl text-xs border-b-4 border-emerald-900 active:border-b-0 cursor-pointer disabled:opacity-40"
-          >
-            {step === 1 ? "Продовжити" : "Завершити налаштування"}
-          </button>
-        </div>
+        <button
+          onClick={handleNextStep}
+          className="w-full mt-6 inline-flex justify-center items-center h-12 bg-slate-900 hover:bg-slate-800 text-white font-black rounded-2xl shadow-xs text-xs md:text-sm border-b-4 border-slate-950 active:border-b-0 cursor-pointer"
+        >
+          {step === 1
+            ? "Продовжити налаштування →"
+            : "✨ Створити профіль адаптації"}
+        </button>
       </div>
     </div>
   );

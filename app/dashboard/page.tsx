@@ -1,7 +1,9 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { createClient } from "../utils/supabase";
+import { createClientConnection } from "../utils/supabase/client"; // Оновили імпорт та шлях
+
+console.log("dashboard/page is working");
 
 interface ChildProfile {
   id: string;
@@ -12,7 +14,8 @@ interface ChildProfile {
 }
 
 export default function DashboardPage() {
-  const supabase = createClient();
+  // Ініціалізуємо ваш клієнтський коннекшн Supabase
+  const supabase = createClientConnection(); // Викликаємо правильну функцію
 
   const [child, setChild] = useState<ChildProfile | null>(null);
   const [loadingChild, setLoadingChild] = useState(true);
@@ -72,7 +75,7 @@ export default function DashboardPage() {
           </h2>
           {loadingChild ? (
             <div className="py-6 text-center text-xs font-bold text-slate-400 animate-pulse">
-              Зчитуємо картку учня з бази...
+              Зчитуємо картку учня з базы...
             </div>
           ) : child ? (
             <div className="space-y-4 animate-in fade-in duration-200">
@@ -121,7 +124,7 @@ export default function DashboardPage() {
             </h2>
             <p className="text-xs md:text-sm font-medium text-slate-500 mt-1">
               Вставте текст параграфа або тему уроку, яку потрібно терміново
-              адаптувати для дитини.
+              адаптувати для дитина.
             </p>
           </div>
           <textarea
