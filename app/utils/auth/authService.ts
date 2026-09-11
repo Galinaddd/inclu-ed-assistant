@@ -1,8 +1,9 @@
-// app/utils/authService.ts
+"use client";
+
 import { createClientConnection } from "../supabase/client";
 
 /**
- * 1. Запускає реальний процес входу через Google OAuth у Supabase
+ * 1. Процес входу через Google OAuth у Supabase
  */
 export const signInWithGoogle = async () => {
   const supabase = createClientConnection();
@@ -10,7 +11,6 @@ export const signInWithGoogle = async () => {
   const { error } = await supabase.auth.signInWithOAuth({
     provider: "google",
     options: {
-      // Адреса, куди Google поверне користувача після авторизації
       redirectTo: `${window.location.origin}/auth/callback`,
     },
   });
@@ -22,24 +22,19 @@ export const signInWithGoogle = async () => {
 };
 
 /**
- * 🌟 2. Єдиний глобальний обробник кліку для БУДЬ-ЯКОЇ кнопки Google на сайті.
- * Виносимо його сюди за вашим планом! Він сам зупиняє браузер і запускає функцію вище.
+ * 2. Глобальний обробник кліку для кнопки Google
  */
 export const handleGoogleAuthClick = async (e: React.SyntheticEvent) => {
-  // Автоматично зупиняємо стандартну поведінку браузера (щоб сторінка не перезавантажувалася)
   e.preventDefault();
-
   try {
-    // Викликаємо функцію входу, яка написана вище в цьому ж файлі
     await signInWithGoogle();
   } catch (error: any) {
-    // Якщо сталася помилка — показуємо віконце alert користувачу
     alert("Не вдалося запустити вхід через Google: " + error.message);
   }
 };
 
 /**
- * 3. Розумний вхід/реєстрація через пошту
+ * 3. Розумний вхід/реєстрація через пошту з перевіркою профілю
  */
 export const signInOrSignUpWithEmail = async (
   email: string,
@@ -47,26 +42,35 @@ export const signInOrSignUpWithEmail = async (
 ) => {
   const supabase = createClientConnection();
 
-  // 1. Спочатку пробуємо увійти
+  // Спроба увійти
   const { data: signInData, error: signInError } =
     await supabase.auth.signInWithPassword({
       email,
       password,
     });
 
-  // Якщо вхід успішний — користувач вже існує
+  // Якщо вхід успішний — користувач вже існує в системі автентифікації
   if (!signInError && signInData.user) {
-    return { user: signInData.user, isNewUser: false };
+    // 🌟 РОЗУМНА ПЕРЕВІРКА: Перевіряємо, чи заповнено профіль (роль) користувача
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("role")
+      .eq("id", signInData.user.id)
+      .single();
+
+    // Якщо роль NULL або профілю немає — відправляємо на онбординг (isNewUser: true)
+    const isProfileIncomplete = !profile || !profile.role;
+    return { user: signInData.user, isNewUser: isProfileIncomplete };
   }
 
-  // 2. Якщо такого користувача немає в базі, автоматично реєструємо його
-  const isUserNotFoundOrInvalid =
+  // Автоматична реєстрація нового користувача, якщо його не знайдено
+  const isUserNotFound =
     signInError &&
     (signInError.status === 400 ||
       signInError.message.toLowerCase().includes("invalid") ||
       signInError.message.toLowerCase().includes("credentials"));
 
-  if (isUserNotFoundOrInvalid) {
+  if (isUserNotFound) {
     console.log("Користувача не знайдено. Автоматично реєструємо...");
 
     const { data: signUpData, error: signUpError } = await supabase.auth.signUp(
@@ -76,15 +80,71 @@ export const signInOrSignUpWithEmail = async (
       },
     );
 
-    if (signUpError) {
-      throw new Error(signUpError.message);
-    }
-
+    if (signUpError) throw new Error(signUpError.message);
     if (signUpData.user) {
       return { user: signUpData.user, isNewUser: true };
     }
   }
 
-  // Якщо виникла будь-яка інша помилка (наприклад, неправильний пароль для існуючого юзера)
   throw new Error(signInError?.message || "Не вдалося обробити запит");
+};
+/**
+ * 4. Функція для повного очищення сесії при виході
+ */
+export const handleSignOutClick = async () => {
+  const supabase = createClientConnection();
+  const { error } = await supabase.auth.signOut();
+  if (error) throw error;
+};
+
+/**
+ * 5. Розумна функція визначення літери для аватарки
+ */
+export const getCurrentUserInitials = async (): Promise<{
+  letter: string;
+  email: string;
+}> => {
+  const supabase = createClientConnection();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  // 🌟 КРИТИЧНИЙ ЗАПОБІЖНИК: Захищає від крашу системи, якщо сесія закрита
+  if (!user) return { letter: "U", email: "" };
+
+  try {
+    // Шукаємо ім'я в реальній таблиці profiles
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("full_name")
+      .eq("id", user.id)
+      .single();
+
+    if (!profileError && profile?.full_name) {
+      // Якщо в базі замість імені лежав email — витягуємо першу літеру пошти, інакше літеру імені
+      const cleanName = profile.full_name.trim();
+      return {
+        letter: cleanName.charAt(0).toUpperCase(),
+        email: user.email || "",
+      };
+    }
+  } catch (err) {
+    console.log("Профіль ще порожній, переходимо до метаданих...");
+  }
+
+  // ФОЛБЕК 1: Метадані Google
+  const fullName =
+    user.user_metadata?.full_name || user.user_metadata?.display_name;
+  if (fullName) {
+    return {
+      letter: fullName.trim().charAt(0).toUpperCase(),
+      email: user.email || "",
+    };
+  }
+
+  // ФОЛБЕК 2: Перша літера пошти
+  const emailLetter = user.email
+    ? user.email.trim().charAt(0).toUpperCase()
+    : "U";
+  return { letter: emailLetter, email: user.email || "" };
 };
