@@ -90,12 +90,11 @@ export default function AuthRedirectProvider({
   // 5. РЕНДЕРИНГ ПУЛЬСУЮЧОГО ЕКРАНА ЗАВАНТАЖЕННЯ
   // Якщо стейт checkingAuth досі true, І користувач знаходиться на одній із трьох головних сторінок,
   // ми зупиняємо рендеринг сайту і повертаємо велику інклюзивну заглушку безпеки.
-  if (
-    checkingAuth &&
-    (pathname === "/" ||
-      pathname.startsWith("/dashboard") ||
-      pathname === "/onboarding")
-  ) {
+  // // 5. РЕНДЕРИНГ ПУЛЬСУЮЧОГО ЕКРАНА ЗАВАНТАЖЕННЯ
+  // Тепер ми повністю виключили головну сторінку, і завантаження працює ТІЛЬКИ для кабінету та онбордингу!
+  // 🌟 ОПТИМІЗОВАНА УМОВА НАВПАКИ:
+  // Перевірка запускається на ВСІХ сторінках, ОКРІМ головної landings-сторінки ("/")
+  if (checkingAuth && pathname !== "/") {
     return (
       <div className="flex items-center justify-center min-h-screen bg-[#FAF9F6] font-sans font-black text-slate-700">
         <div className="animate-pulse text-sm select-none tracking-tight">
