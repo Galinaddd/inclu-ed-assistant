@@ -44,16 +44,24 @@ export default function OnboardingPage() {
   useEffect(() => {
     const fetchReferences = async () => {
       try {
-        // 🎯 Робимо розумний Join: витягуємо діагнози разом із даними їхньої групи
+        // 🎯 Чистий реляційний Join через базу даних за один запит зі збереженням назв змінних!
         const { data: diagData, error: diagErr } = await supabase.from(
           "ref_diagnoses",
         ).select(`
-          code, 
-          title, 
-          description,
-          group_id,
-          ref_diagnosis_groups (title, sort_order)
-        `);
+    code, 
+    title, 
+    description,
+    group_id,
+    ref_diagnosis_groups (
+      id,
+      title,
+      sort_order
+    )
+      
+  `);
+        // 🎯 ДОДАЙТЕ СЮДИ ЦЕЙ РЯДОК:
+        console.log("=== РЕАЛЬНІ ДАНІ З БАЗИ ДАННИХ ===", diagData); // 🎯 Тепер
+        // об'єкт ref_diagnosis_groups гарантовано прийде з бази даних!
 
         const { data: supportData, error: supportErr } = await supabase
           .from("ref_support_levels")
@@ -65,8 +73,8 @@ export default function OnboardingPage() {
         if (diagData) setDiagnosesList(diagData);
         if (supportData) setSupportLevelsList(supportData);
       } catch (err) {
-        console.error("Помилка довідників МОН:", err);
-        setErrorMessage("Не вдалося завантажити системні довідники.");
+        console.error("Глобальна помилка завантаження довідників МОН:", err);
+        setErrorMessage("Не вдалося завантажити системні довідники з бази.");
       } finally {
         setLoadingRefs(false);
       }

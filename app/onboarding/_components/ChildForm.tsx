@@ -24,6 +24,7 @@ interface ReferenceItem {
   description: string;
   group_id?: string;
   ref_diagnosis_groups?: {
+    id: string; // 👈 Додали id сюди
     title: string;
     sort_order: number;
   };
@@ -187,6 +188,7 @@ export default function ChildForm({
 
                 diagnosesList.forEach((diag: any) => {
                   const groupInfo = diag.ref_diagnosis_groups;
+
                   const gId = diag.group_id || "OTHER";
                   const gTitle = groupInfo?.title || "ІНШЕ";
                   const gOrder = groupInfo?.sort_order || 99;
