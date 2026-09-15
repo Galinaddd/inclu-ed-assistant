@@ -18,11 +18,11 @@ export default function RootLayout({
   return (
     <html lang="uk" className={`${jakarta.variable}`}>
       <body className="font-sans antialiased min-h-screen bg-[#FAF9F6]">
-        <AuthRedirectProvider>
-          {/* 🌟 ВСТАВЛЯЄМО ШАПКУ В ЛЕЙАУТ: тепер вона головна на всьому сайті */}
-          <Header />
-          {children}
-        </AuthRedirectProvider>
+        {/* <AuthRedirectProvider> */}
+        {/* 🌟 ВСТАВЛЯЄМО ШАПКУ В ЛЕЙАУТ: тепер вона головна на всьому сайті */}
+        <Header />
+        {children}
+        {/* </AuthRedirectProvider> */}
       </body>
     </html>
   );
