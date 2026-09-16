@@ -2,17 +2,15 @@
 
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-
 import { createClientConnection } from "../utils/supabase/client";
 
-// Замініть рядки 7 та 8 на цей варіант:
 import RoleForm from "./_components/RoleForm";
 import ChildForm from "./_components/ChildForm";
-
-// Замініть рядок 11 на цей варіант:
 import { submitOnboardingAction } from "./actions";
+
 interface ReferenceItem {
   code?: string;
+  id?: string; // Для програм
   level_number?: number;
   title: string;
   description: string;
@@ -33,45 +31,61 @@ export default function OnboardingPage() {
   const [supportLevelsList, setSupportLevelsList] = useState<ReferenceItem[]>(
     [],
   );
+  const [programsList, setProgramsList] = useState<ReferenceItem[]>([]);
 
   // Головний стейт даних користувача, який збирається з обох форм
   const [role, setRole] = useState<"teacher" | "parent" | null>(null);
+  const [childName, setChildName] = useState<string>(""); // 🌟 ДОДАЛИ: Стейт імені для синхронізації з ChildForm
   const [childProfile, setChildProfile] = useState<string | null>(null);
   const [supportLevel, setSupportLevel] = useState<number | null>(null);
+  const [programId, setProgramId] = useState<string | null>(null);
   const [childAge, setChildAge] = useState<string>("");
   const [schoolClass, setSchoolClass] = useState<string>("1");
 
   useEffect(() => {
     const fetchReferences = async () => {
       try {
-        // 🎯 Чистий реляційний Join через базу даних за один запит зі збереженням назв змінних!
+        // 1. Завантаження діагнозів
         const { data: diagData, error: diagErr } = await supabase.from(
           "ref_diagnoses",
         ).select(`
-    code, 
-    title, 
-    description,
-    group_id,
-    ref_diagnosis_groups (
-      id,
-      title,
-      sort_order
-    )
-      
-  `);
-        // 🎯 ДОДАЙТЕ СЮДИ ЦЕЙ РЯДОК:
-        console.log("=== РЕАЛЬНІ ДАНІ З БАЗИ ДАННИХ ===", diagData); // 🎯 Тепер
-        // об'єкт ref_diagnosis_groups гарантовано прийде з бази даних!
+          code, 
+          title, 
+          description,
+          group_id,
+          ref_diagnosis_groups (
+            id,
+            title,
+            sort_order
+          )
+        `);
 
+        // 2. Завантаження рівнів підтримки
         const { data: supportData, error: supportErr } = await supabase
           .from("ref_support_levels")
           .select("level_number, title, description");
 
+        // 3. Завантаження освітніх програм з бази
+        const { data: programData, error: programErr } = await supabase
+          .from("educational_programs")
+          .select("id, program_name, description");
+
         if (diagErr) console.error("Помилка діагнозів:", diagErr);
         if (supportErr) console.error("Помилка рівнів:", supportErr);
+        if (programErr) console.error("Помилка програм:", programErr);
 
-        if (diagData) setDiagnosesList(diagData);
-        if (supportData) setSupportLevelsList(supportData);
+        if (diagData) setDiagnosesList(diagData as any);
+        if (supportData) setSupportLevelsList(supportData as any);
+
+        // Мапимо назву програми в title, щоб ChildForm прийняла об'єкт без конфліктів типів
+        if (programData) {
+          const formattedPrograms = programData.map((p) => ({
+            id: p.id,
+            title: p.program_name,
+            description: p.description,
+          }));
+          setProgramsList(formattedPrograms);
+        }
       } catch (err) {
         console.error("Глобальна помилка завантаження довідників МОН:", err);
         setErrorMessage("Не вдалося завантажити системні довідники з бази.");
@@ -82,25 +96,25 @@ export default function OnboardingPage() {
     fetchReferences();
   }, [supabase]);
 
-  // Функція, яка спрацьовує при успішному завершенні форми Кроку 1
+  // Функція Кроку 1
   const handleRoleComplete = (chosenRole: "teacher" | "parent") => {
     setRole(chosenRole);
     setErrorMessage(null);
-    setStep(2); // Переходимо до форми дитини
+    setStep(2);
   };
-
-  // Функція, яка спрацьовує при успішній відправці форми Кроку 2
+  // Функція Кроку 2 з правильною, строгою типізацією аргументу
   const handleChildComplete = async (childData: {
+    childName: string; // 🌟 ДОДАЛИ СЮДИ строгий тип імені
     childProfile: string;
     supportLevel: number;
     childAge: number | null;
     schoolClass: number;
+    programId: string | null;
   }) => {
     setSubmitLoading(true);
     setErrorMessage(null);
 
     try {
-      // Отримуємо поточного користувача (мідлвара вже гарантує, що він авторизований)
       const {
         data: { user },
       } = await supabase.auth.getUser();
@@ -111,23 +125,23 @@ export default function OnboardingPage() {
         throw new Error("Втрачено роль користувача. Оберіть її заново.");
       }
 
-      // Викликаємо Server Action (наш чистий ізольований бекенд)
+      // Викликаємо Server Action
       const response = await submitOnboardingAction({
         userId: user.id,
         role: role,
+        childName: childData.childName, // 🌟 Надійно передаємо введене ім'я дитини
         childProfile: childData.childProfile,
         supportLevel: childData.supportLevel,
         childAge: childData.childAge,
         schoolClass: childData.schoolClass,
+        programId: childData.programId,
       });
 
       if (response.success) {
-        // Успіх! Перенаправляємо в кабінет (деплой та мідлвара оновлять роути)
-        // 🎯 Замість window.location.href використовуємо фірмовий роутер Next.js!
         router.push("/dashboard");
-        router.refresh(); // Оновлюємо серверні дані, щоб дашборд одразу побачив нову дитину
+        router.refresh();
       } else {
-        setErrorMessage(response.error || "Сталася помилка при збереженні.");
+        setErrorMessage(response.error || "Сталася ошибка при збереженні.");
         setSubmitLoading(false);
       }
     } catch (err: any) {
@@ -143,7 +157,6 @@ export default function OnboardingPage() {
     >
       <h1 className="sr-only">IncluEdAssistant.ai — Налаштування</h1>
 
-      {/* Глобальний вивід помилок на рівні сторінки */}
       {errorMessage && (
         <div
           className="w-full max-w-xl mb-4 p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs font-bold text-left animate-in fade-in"
@@ -153,7 +166,7 @@ export default function OnboardingPage() {
         </div>
       )}
 
-      {/* 🔄 Диригент форм: показуємо потрібну форму залежно від етапу */}
+      {/* Диригент кроків форми */}
       {step === 1 && (
         <RoleForm onComplete={handleRoleComplete} initialRole={role} />
       )}
@@ -163,6 +176,7 @@ export default function OnboardingPage() {
           role={role!}
           diagnosesList={diagnosesList}
           supportLevelsList={supportLevelsList}
+          programsList={programsList}
           loadingRefs={loadingRefs}
           submitLoading={submitLoading}
           onBack={() => setStep(1)}
@@ -172,8 +186,10 @@ export default function OnboardingPage() {
             supportLevel,
             childAge,
             schoolClass,
+            programId,
           }}
           onChangeValues={(vals) => {
+            if (vals.childName !== undefined) setChildName(vals.childName); // 🌟 Трекаємо зміну імені
             if (vals.childProfile !== undefined)
               setChildProfile(vals.childProfile);
             if (vals.supportLevel !== undefined)
@@ -181,6 +197,7 @@ export default function OnboardingPage() {
             if (vals.childAge !== undefined) setChildAge(vals.childAge);
             if (vals.schoolClass !== undefined)
               setSchoolClass(vals.schoolClass);
+            if (vals.programId !== undefined) setProgramId(vals.programId);
           }}
         />
       )}

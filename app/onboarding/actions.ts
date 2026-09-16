@@ -1,13 +1,16 @@
 "use server";
+
 import { createServerConnection } from "../utils/supabase/server"; // Серверний коннекшн Supabase
 
 interface OnboardingData {
   userId: string;
   role: "teacher" | "parent";
+  childName: string; // 🌟 ДОДАЛИ СЮДИ: ім'я дитини з форми
   childProfile: string;
   supportLevel: number;
   childAge: number | null;
   schoolClass: number;
+  programId: string | null;
 }
 
 export async function submitOnboardingAction(data: OnboardingData) {
@@ -37,11 +40,12 @@ export async function submitOnboardingAction(data: OnboardingData) {
       .from("children_profiles")
       .insert({
         user_id: data.userId,
-        child_name: data.role === "parent" ? "Моя дитина" : "Учень",
+        child_name: data.childName, // 🌟 ТЕПЕР ЗАПИСУЄМО РЕАЛЬНЕ ІМ'Я З ФОРМИ В БАЗУ!
         child_profile: data.childProfile,
         support_level: data.supportLevel,
         child_age: data.childAge,
         school_class: data.schoolClass,
+        program_id: data.programId,
       });
 
     if (childError) throw childError;

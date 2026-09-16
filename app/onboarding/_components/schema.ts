@@ -1,33 +1,41 @@
 import * as z from "zod";
 
-// Схема для першої форми (Вибір ролі)
 export const roleFormSchema = z.object({
   role: z.string().min(1, "Будь ласка, оберіть вашу роль."),
 });
 export type RoleFormValues = z.infer<typeof roleFormSchema>;
 
-// Схема для другої форми (Картка дитини)
 export const childFormSchema = z.object({
-  childAge: z.string().refine(
-    (val) => {
-      const age = parseInt(val, 10);
-      return !isNaN(age) && age >= 5 && age <= 18;
-    },
-    { message: "Вік має бути від 5 до 18 років." },
-  ),
+  // Нове обов'язкове поле для імені учня / дитини
+  childName: z.string().min(2, "Введіть ім'я дитини (мінімум 2 символи)."),
 
-  schoolClass: z.string().refine(
-    (val) => {
-      const cls = parseInt(val, 10);
-      return !isNaN(cls) && cls >= 1 && cls <= 11;
-    },
-    { message: "Клас має бути від 1 до 11." },
-  ),
+  // Автоматично перетворюємо рядок віку в число для бази
+  childAge: z
+    .string()
+    .transform((val) => parseInt(val, 10))
+    .refine((age) => !isNaN(age) && age >= 5 && age <= 18, {
+      message: "Вік має бути від 5 до 18 років.",
+    }),
+
+  // Автоматично перетворюємо рядок класу в число для бази
+  schoolClass: z
+    .string()
+    .transform((val) => parseInt(val, 10))
+    .refine((cls) => !isNaN(cls) && cls >= 1 && cls <= 11, {
+      message: "Клас має бути від 1 до 11.",
+    }),
 
   childProfile: z
     .string()
     .min(1, "Будь ласка, оберіть категорію труднощів дитини."),
 
-  supportLevel: z.number().min(1).max(5).optional(),
+  // Перетворюємо рівень підтримки з селектора в число, щоб не було помилки "received string"
+  supportLevel: z
+    .string()
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().min(1).max(5)),
+
+  programId: z.string().nullable().optional(),
 });
+
 export type ChildFormValues = z.infer<typeof childFormSchema>;

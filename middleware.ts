@@ -46,7 +46,9 @@ export async function middleware(request: NextRequest) {
 
   // Сценарій Б: Онбординг пройдено успішно (роль є в базі)
   // Не пускаємо назад на лендинг або анкету онбордингу
-  if (currentPath === "/" || currentPath === "/onboarding") {
+  if (currentPath === "/" //|| currentPath === "/onboarding"
+  )
+  {
     url.pathname = "/dashboard";
     return NextResponse.redirect(url); // Тільки на твій готовий Дашборд
   }
