@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
-import { handleSignOutClick } from "@/app/utils/auth/authService";
+import { handleSignOutClick } from "@/app/utils/auth/authService"; // 🌟 Імпорт виходу з відновленого сервісу
 
 interface UserMenuProps {
   userLetter: string;
@@ -15,9 +15,11 @@ export default function UserMenu({ userLetter, userEmail }: UserMenuProps) {
 
   const handleLogOut = async () => {
     try {
-      await handleSignOutClick();
+      await handleSignOutClick(); // 🌟 Викликаємо наш чистий метод
       setShowUserMenu(false);
-      router.refresh();
+
+      // Жорсткий резистентний вихід на корінь сайту, щоб Next.js напевно збив клієнтський кеш роутера
+      window.location.href = "/";
     } catch (error) {
       console.error("Помилка виходу:", error);
     }

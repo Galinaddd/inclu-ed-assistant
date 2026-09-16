@@ -51,7 +51,7 @@ export const signInOrSignUpWithEmail = async (
 
   // Якщо вхід успішний — користувач вже існує в системі автентифікації
   if (!signInError && signInData.user) {
-    // 🌟 РОЗУМНА ПЕРЕВІРКА: Перевіряємо, чи заповнено профіль (роль) користувача
+    // Перевіряємо, чи заповнено профіль (роль) користувача
     const { data: profile } = await supabase
       .from("profiles")
       .select("role")
@@ -88,6 +88,7 @@ export const signInOrSignUpWithEmail = async (
 
   throw new Error(signInError?.message || "Не вдалося обробити запит");
 };
+
 /**
  * 4. Функція для повного очищення сесії при виході
  */
@@ -95,56 +96,4 @@ export const handleSignOutClick = async () => {
   const supabase = createClientConnection();
   const { error } = await supabase.auth.signOut();
   if (error) throw error;
-};
-
-/**
- * 5. Розумна функція визначення літери для аватарки
- */
-export const getCurrentUserInitials = async (): Promise<{
-  letter: string;
-  email: string;
-}> => {
-  const supabase = createClientConnection();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  // 🌟 КРИТИЧНИЙ ЗАПОБІЖНИК: Захищає від крашу системи, якщо сесія закрита
-  if (!user) return { letter: "U", email: "" };
-
-  try {
-    // Шукаємо ім'я в реальній таблиці profiles
-    const { data: profile, error: profileError } = await supabase
-      .from("profiles")
-      .select("full_name")
-      .eq("id", user.id)
-      .single();
-
-    if (!profileError && profile?.full_name) {
-      // Якщо в базі замість імені лежав email — витягуємо першу літеру пошти, інакше літеру імені
-      const cleanName = profile.full_name.trim();
-      return {
-        letter: cleanName.charAt(0).toUpperCase(),
-        email: user.email || "",
-      };
-    }
-  } catch (err) {
-    console.log("Профіль ще порожній, переходимо до метаданих...");
-  }
-
-  // ФОЛБЕК 1: Метадані Google
-  const fullName =
-    user.user_metadata?.full_name || user.user_metadata?.display_name;
-  if (fullName) {
-    return {
-      letter: fullName.trim().charAt(0).toUpperCase(),
-      email: user.email || "",
-    };
-  }
-
-  // ФОЛБЕК 2: Перша літера пошти
-  const emailLetter = user.email
-    ? user.email.trim().charAt(0).toUpperCase()
-    : "U";
-  return { letter: emailLetter, email: user.email || "" };
 };
