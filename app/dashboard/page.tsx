@@ -4,6 +4,7 @@ import React, { useEffect, useState, useTransition } from "react";
 import { createClientConnection } from "../utils/supabase/client";
 import { getSubjectsByChild, getBooksBySubject } from "./actions";
 import { Loader2, BookOpen, FileText, CheckCircle2 } from "lucide-react";
+import UploadBookModal from "./_components/UploadBookModal";
 
 interface ChildProfile {
   id: string;
@@ -13,7 +14,7 @@ interface ChildProfile {
   support_level: number;
   child_age: number | null;
   school_class: number | null;
-  program_id: string | null; // <-- ОСЬ ЦЕЙ РЯДОК ВИПРАВИТЬ ПОМИЛКУ НА СТРІЧЦІ 125
+  program_id: string | null;
   ref_diagnoses?: {
     title: string;
   };
@@ -51,7 +52,10 @@ export default function DashboardPage() {
   const [inputText, setInputText] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [isPending, startTransition] = useTransition();
-  // 1. Твій автентичний дебаг
+
+  const [isUploadOpen, setIsUploadOpen] = useState(false);
+
+  // 1. Дебаг бази даних у браузері
   useEffect(() => {
     const debugDatabase = async () => {
       const {
@@ -63,15 +67,13 @@ export default function DashboardPage() {
           .select("*")
           .eq("id", user.id)
           .maybeSingle();
-
-        console.log("=== ЧИСТИЙ ДЕБАГ ДАШБОРДУ В БРАУЗЕРІ ===");
-        console.log("Мій рядок в таблиці profiles:", profile);
+        console.log("=== ЧИСТИЙ ДЕБАГ ДАШБОРДУ В БРАУЗЕРІ ===", profile);
       }
     };
     debugDatabase();
   }, [supabase]);
 
-  // 2. Реляційне завантаження дітей з урахуванням твого розумного UX-правила
+  // 2. Реляційне завантаження дітей
   useEffect(() => {
     const fetchChildrenData = async () => {
       try {
@@ -90,14 +92,12 @@ export default function DashboardPage() {
           const parsedChildren = data as unknown as ChildProfile[];
           setChildren(parsedChildren);
 
-          // Якщо дитина всього одна — вибираємо її автоматично
           if (parsedChildren.length === 1) {
             setActiveChild(parsedChildren[0]);
           } else {
             setActiveChild(null);
           }
         }
-        if (error) console.error("Помилка завантаження дітей:", error.message);
       } catch (err) {
         console.error("Не вдалося підтягнути профілі учнів:", err);
       } finally {
@@ -107,7 +107,7 @@ export default function DashboardPage() {
     fetchChildrenData();
   }, [supabase]);
 
-  // 3. Динамічний фетч ПРЕДМЕТІВ при зміні активної дитини (Правило №5: No Hardcode)
+  // 3. Динамічний фетч предметів при зміні дитини
   useEffect(() => {
     if (!activeChild?.school_class) {
       setSubjects([]);
@@ -125,10 +125,6 @@ export default function DashboardPage() {
         activeChild.school_class!,
         activeChild.program_id,
       );
-      console.log("TTTTTTTTTTTTTT");
-      console.log(activeChild.program_id);
-      console.log(activeChild.school_class);
-      console.log(res);
       if (res.success) {
         setSubjects(res.data);
       }
@@ -136,7 +132,7 @@ export default function DashboardPage() {
     });
   }, [activeChild]);
 
-  // 4. Динамічний фетч КНИЖОК при виборі предмета
+  // 4. Динамічний фетч книжок при виборі предмета
   useEffect(() => {
     if (!activeSubject || !activeChild?.school_class) {
       setBooks([]);
@@ -170,7 +166,7 @@ export default function DashboardPage() {
   return (
     <div className="bg-[#FAF9F6] font-sans text-slate-900 flex flex-col justify-between min-h-[calc(100vh-88px)]">
       <main className="max-w-6xl mx-auto px-4 md:px-6 py-4 flex-grow w-full grid grid-cols-1 lg:grid-cols-12 gap-6 relative z-10">
-        {/* ЛІВА ПАНЕЛЬ — АДАПТИВНИЙ СПИСОК УЧНІВ (Mobile-first) */}
+        {/* ЛІВА ПАНЕЛЬ — СПИСОК УЧНІВ */}
         <div className="lg:col-span-4 flex flex-col gap-4 w-full">
           <div className="bg-white border-2 border-slate-200 p-5 rounded-2xl shadow-xs text-left w-full">
             <div className="flex justify-between items-center mb-4">
@@ -221,164 +217,148 @@ export default function DashboardPage() {
                         )}
                       </div>
 
-                      <p className="text-xs font-bold text-slate-700 truncate pt-1 border-t border-dashed border-slate-100 w-full">
-                        🧬 {child.ref_diagnoses?.title || child.child_profile}
+                      <p className="text-xs font-bold text-slate-700 truncate pt-1 border-t border-dashed border-slate-100 w-full text-left">
+                        🧬 {child.ref_diagnoses?.title || "Діагноз не вказано"}
                       </p>
-
-                      <div className="text-[9px] font-black uppercase tracking-wider text-sky-800 bg-sky-50 border border-sky-100 rounded-md px-2 py-0.5 w-fit mt-1 shrink-0">
-                        🎯 {child.support_level} рівень підтримки
-                      </div>
                     </button>
                   );
                 })}
               </div>
             ) : (
-              <div className="p-4 bg-amber-50 border-2 border-amber-200 rounded-xl text-center">
-                <p className="text-xs font-bold text-amber-900 mb-2">
-                  У учня ще немає налаштованого профілю.
-                </p>
-                <a
-                  href="/onboarding"
-                  className="inline-flex text-xs font-black text-white bg-amber-600 px-3 py-1.5 rounded-lg hover:bg-amber-700"
-                >
-                  Заповнити анкету
-                </a>
+              <div className="text-center py-6 text-xs font-bold text-slate-400">
+                Немає доданих профілів дітей.
               </div>
             )}
           </div>
         </div>
-        {/* ПРАВА ПАНЕЛЬ — КАСКАДНИЙ ВИБІР (Предмети ➔ Підручники) */}
-        <div className="lg:col-span-8 bg-white border-2 border-slate-200 p-5 md:p-6 rounded-2xl shadow-xs flex flex-col gap-5 text-left w-full h-fit">
-          {!activeChild ? (
-            <div className="text-center py-12 text-slate-400 font-medium text-sm border-2 border-dashed border-slate-200 rounded-xl bg-slate-50/50">
-              👈 Будь ласка, оберіть дитину зі списку зліва для початку роботи
-            </div>
-          ) : (
-            <div className="space-y-6 w-full">
-              <div>
-                <h2 className="font-black text-lg md:text-xl text-slate-900 tracking-tight flex items-center gap-1.5 flex-wrap">
-                  Введіть матеріал підручника НУШ для{" "}
-                  <span className="text-emerald-700 font-black">
-                    «{activeChild.child_name}»
-                  </span>
-                </h2>
-                <p className="text-xs text-slate-400 mt-1 font-medium">
-                  Матеріал буде адаптовано під {activeChild.support_level}-й
-                  рівень підтримки МОН.
+
+        {/* ПРАВА ПАНЕЛЬ — ДИНАМІЧНИЙ ВИВІД ПРЕДМЕТІВ ТА ПІДРУЧНИКІВ */}
+        <div className="lg:col-span-8 flex flex-col gap-6 w-full text-left">
+          {/* СЕКЦІЯ 1: СІТКА НАВЧАЛЬНИХ ПРЕДМЕТІВ */}
+          {activeChild && (
+            <div className="bg-white border-2 border-slate-200 p-5 rounded-2xl shadow-xs w-full">
+              <h3 className="text-sm font-black text-slate-900 mb-3 flex items-center gap-2">
+                📂 Предмети програми для {activeChild.child_name} (
+                {activeChild.school_class} клас)
+              </h3>
+
+              {loadingSubjects ? (
+                <div className="flex items-center gap-2 text-xs font-bold text-slate-400 py-2 animate-pulse">
+                  <Loader2 className="h-4 w-4 animate-spin text-emerald-700" />
+                  <span>Зчитуємо предмети...</span>
+                </div>
+              ) : subjects.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {subjects.map((subject) => {
+                    const isSubActive = activeSubject?.id === subject.id;
+                    return (
+                      <button
+                        key={subject.id}
+                        onClick={() => setActiveSubject(subject)}
+                        className={`text-xs font-bold px-3 py-2 rounded-xl border-2 transition-all cursor-pointer focus:outline-none ${
+                          isSubActive
+                            ? "bg-slate-900 border-slate-900 text-white shadow-xs"
+                            : "bg-white border-slate-200 hover:border-slate-300 text-slate-700"
+                        }`}
+                      >
+                        {subject.subject_name}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-xs font-bold text-slate-400 py-2">
+                  Предмети програми відсутні в базі.
                 </p>
-              </div>
+              )}
+            </div>
+          )}
 
-              {/* КРОК 1: Список предметів */}
-              <div className="space-y-2">
-                <h3 className="text-xs font-black text-slate-400 uppercase tracking-wider">
-                  📚 Крок 1: Оберіть предмет
-                </h3>
-                {loadingSubjects ? (
-                  <div className="text-xs text-slate-400 animate-pulse py-2 font-bold">
-                    Шукаємо предмети...
-                  </div>
-                ) : subjects.length > 0 ? (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    {subjects.map((sub) => {
-                      const isSubActive = activeSubject?.id === sub.id;
-                      return (
-                        <button
-                          key={sub.id}
-                          type="button"
-                          onClick={() => setActiveSubject(sub)}
-                          className={`p-3 text-xs font-black text-left rounded-xl border-2 transition-all cursor-pointer ${
-                            isSubActive
-                              ? "bg-emerald-50 border-emerald-500 text-emerald-950"
-                              : "bg-white border-slate-100 hover:border-slate-300"
-                          }`}
-                        >
-                          {sub.subject_name}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="text-xs text-amber-700 bg-amber-50/70 p-3 border-2 border-dashed border-amber-200 rounded-xl font-bold">
-                    📭 Для цього класу ще не додано предметів програми.
-                  </div>
-                )}
-              </div>
+          {/* СЕКЦІЯ 2: СІТКА ПІДРУЧНИКІВ АВТОРІВ + КНОПКА ДОДАТИ КНИГУ */}
+          {activeSubject && (
+            <div className="bg-white border-2 border-slate-200 p-5 rounded-2xl shadow-xs w-full animate-in fade-in slide-in-from-top-1 duration-200">
+              <h3 className="text-sm font-black text-slate-900 mb-3 flex items-center gap-2">
+                📚 Доступні підручники з предмета «{activeSubject.subject_name}»
+              </h3>
 
-              {/* КРОК 2: Список книг */}
-              {activeSubject && (
-                <div className="space-y-2 pt-2 border-t border-dashed border-slate-100">
-                  <h3 className="text-xs font-black text-slate-400 uppercase tracking-wider">
-                    📖 Крок 2: Оберіть підручник
-                  </h3>
-                  {loadingBooks ? (
-                    <div className="text-xs text-slate-400 animate-pulse py-2 font-bold">
-                      Зчитуємо книги...
-                    </div>
-                  ) : books.length > 0 ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      {books.map((book) => {
-                        const isBookActive = activeBook?.id === book.id;
-                        return (
-                          <button
-                            key={book.id}
-                            type="button"
-                            onClick={() => setActiveBook(book)}
-                            className={`p-3 text-xs font-bold text-left rounded-xl border-2 transition-all cursor-pointer ${
-                              isBookActive
-                                ? "bg-sky-50 border-sky-500 text-sky-950"
-                                : "bg-white border-slate-100 hover:border-slate-300"
-                            }`}
-                          >
+              {loadingBooks ? (
+                <div className="flex items-center gap-2 text-xs font-bold text-slate-400 py-4 animate-pulse">
+                  <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
+                  <span>Шукаємо підручники авторів...</span>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* Перебір існуючих книг з бази даних */}
+                  {books.map((book) => {
+                    const isBookActive = activeBook?.id === book.id;
+                    return (
+                      <button
+                        key={book.id}
+                        onClick={() => setActiveBook(book)}
+                        className={`text-left p-4 rounded-xl border-2 transition-all cursor-pointer flex items-start gap-3 h-auto focus:outline-none ${
+                          isBookActive
+                            ? "bg-indigo-50/40 border-indigo-500 shadow-xs"
+                            : "bg-white border-slate-200 hover:border-slate-300"
+                        }`}
+                      >
+                        <BookOpen
+                          className={`h-5 w-5 mt-0.5 shrink-0 ${isBookActive ? "text-indigo-600" : "text-slate-400"}`}
+                        />
+                        <div className="flex flex-col gap-0.5 min-w-0">
+                          <p className="text-xs font-black text-slate-900 break-words whitespace-normal leading-tight">
                             {book.title}
-                          </button>
-                        );
-                      })}
+                          </p>
+                          <p className="text-[10px] font-bold text-slate-400 truncate">
+                            {book.publisher || "Видавництво"}{" "}
+                            {book.publishing_year
+                              ? `• ${book.publishing_year} р.`
+                              : ""}
+                          </p>
+                        </div>
+                      </button>
+                    );
+                  })}
+
+                  {/* ➕ КНОПКА: Додати новий підручник — ВІДКРИВАЄ НАШЕ ВІКНО */}
+                  <button
+                    onClick={() => setIsUploadOpen(true)}
+                    className="text-left p-4 rounded-xl border-2 border-dashed border-slate-300 hover:border-indigo-400 bg-slate-50/50 hover:bg-indigo-50/20 transition-all cursor-pointer flex items-center gap-3 group focus:outline-none focus-visible:ring-4 focus-visible:ring-indigo-400/20 w-full"
+                  >
+                    <div className="h-8 w-8 rounded-lg bg-white border border-slate-200 flex items-center justify-center shrink-0 group-hover:border-indigo-200 transition-colors">
+                      <span className="text-slate-400 group-hover:text-indigo-600 font-black text-sm">
+                        +
+                      </span>
                     </div>
-                  ) : (
-                    <div className="text-xs text-slate-400 bg-slate-50 p-3 border border-dashed border-slate-200 rounded-xl">
-                      💡 Для цього предмета ще немає книг. Можна ввести текст
-                      вручну нижче.
+                    <div className="flex flex-col gap-0.5">
+                      <p className="text-xs font-black text-slate-700 group-hover:text-indigo-600 transition-colors">
+                        Додати новий підручник
+                      </p>
+                      <p className="text-[10px] font-bold text-slate-400">
+                        Завантажити PDF файл
+                      </p>
                     </div>
-                  )}
+                  </button>
                 </div>
               )}
-              {/* КРОК 3: Текстове поле введення матеріалу параграфа */}
-              <div className="space-y-3 pt-4 border-t-2 border-slate-100">
-                <label className="text-xs font-black text-slate-500 uppercase tracking-wider block">
-                  📝 Крок 3: Введіть параграф або завдання підручника
-                </label>
+            </div>
+          )}
 
-                <textarea
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  placeholder={
-                    activeBook
-                      ? `Вставте сюди текст з підручника «${activeBook.title}»...`
-                      : "Вставте сюди текст параграфа підручника НУШ або опишіть проблему..."
-                  }
-                  className="w-full h-36 p-4 rounded-xl border-2 border-slate-200 focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-500/10 transition-all text-sm font-medium resize-none placeholder-slate-400 bg-[#FAF9F6]/30"
-                />
-
-                <button
-                  type="button"
-                  onClick={handleAdaptationSubmit}
-                  disabled={isGenerating || !inputText.trim()}
-                  className="w-full sm:w-auto sm:float-right px-6 py-3.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 text-white font-black text-xs uppercase tracking-wider rounded-xl shadow-md hover:shadow-lg disabled:shadow-none transition-all cursor-pointer flex items-center justify-center gap-2 outline-none focus:ring-4 focus:ring-emerald-500/30"
-                >
-                  {isGenerating ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Адаптація...
-                    </>
-                  ) : (
-                    "✨ Адаптувати матеріал за 10с"
-                  )}
-                </button>
-              </div>
+          {/* Якщо нічого не обрано — підказка */}
+          {!activeChild && (
+            <div className="bg-white border-2 border-dashed border-slate-200 p-8 rounded-2xl text-center text-sm font-bold text-slate-400 shadow-xs">
+              👈 Оберіть профіль учня зліва, щоб відобразити предмети
             </div>
           )}
         </div>
       </main>
+
+      {/* НАШЕ МІКРО-МОДАЛЬНЕ ВІКНО ЗАВАНТАЖЕННЯ КНИГ */}
+      <UploadBookModal
+        isOpen={isUploadOpen}
+        onClose={() => setIsUploadOpen(false)}
+        subjectName={activeSubject?.subject_name || "Предмет"}
+        schoolClass={activeChild?.school_class || 1}
+      />
     </div>
   );
 }

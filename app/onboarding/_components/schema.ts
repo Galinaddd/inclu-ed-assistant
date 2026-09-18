@@ -35,7 +35,10 @@ export const childFormSchema = z.object({
     .transform((val) => parseInt(val, 10))
     .pipe(z.number().min(1).max(5)),
 
-  programId: z.string().nullable().optional(),
+  // Було: programId: z.string().nullable().optional(),
+
+  // Стало: поле обов'язкове, з чітким текстом помилки
+  programId: z.string().min(1, "Будь ласка, оберіть освітню програму учня."),
 });
 
 export type ChildFormValues = z.infer<typeof childFormSchema>;
