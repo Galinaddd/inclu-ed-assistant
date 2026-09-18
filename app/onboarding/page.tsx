@@ -26,16 +26,17 @@ export default function OnboardingPage() {
   const [submitLoading, setSubmitLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Списки довідників з бази даних Supabase
+  // Списки довідників
   const [diagnosesList, setDiagnosesList] = useState<ReferenceItem[]>([]);
   const [supportLevelsList, setSupportLevelsList] = useState<ReferenceItem[]>(
     [],
   );
   const [programsList, setProgramsList] = useState<ReferenceItem[]>([]);
 
-  // Головний стейт даних користувача, який збирається з обох форм
+  // Головний стейт ролі
   const [role, setRole] = useState<"teacher" | "parent" | null>(null);
-  const [childName, setChildName] = useState<string>(""); // 🌟 ДОДАЛИ: Стейт імені для синхронізації з ChildForm
+
+  const [childName, setChildName] = useState<string>("");
   const [childProfile, setChildProfile] = useState<string | null>(null);
   const [supportLevel, setSupportLevel] = useState<number | null>(null);
   const [programId, setProgramId] = useState<string | null>(null);
@@ -45,7 +46,6 @@ export default function OnboardingPage() {
   useEffect(() => {
     const fetchReferences = async () => {
       try {
-        // 1. Завантаження діагнозів
         const { data: diagData, error: diagErr } = await supabase.from(
           "ref_diagnoses",
         ).select(`
@@ -60,12 +60,10 @@ export default function OnboardingPage() {
           )
         `);
 
-        // 2. Завантаження рівнів підтримки
         const { data: supportData, error: supportErr } = await supabase
           .from("ref_support_levels")
           .select("level_number, title, description");
 
-        // 3. Завантаження освітніх програм з бази
         const { data: programData, error: programErr } = await supabase
           .from("educational_programs")
           .select("id, program_name, description");
@@ -77,7 +75,6 @@ export default function OnboardingPage() {
         if (diagData) setDiagnosesList(diagData as any);
         if (supportData) setSupportLevelsList(supportData as any);
 
-        // Мапимо назву програми в title, щоб ChildForm прийняла об'єкт без конфліктів типів
         if (programData) {
           const formattedPrograms = programData.map((p) => ({
             id: p.id,
@@ -96,15 +93,14 @@ export default function OnboardingPage() {
     fetchReferences();
   }, [supabase]);
 
-  // Функція Кроку 1
   const handleRoleComplete = (chosenRole: "teacher" | "parent") => {
     setRole(chosenRole);
     setErrorMessage(null);
     setStep(2);
   };
-  // Функція Кроку 2 з правильною, строгою типізацією аргументу
+
   const handleChildComplete = async (childData: {
-    childName: string; // 🌟 ДОДАЛИ СЮДИ строгий тип імені
+    childName: string;
     childProfile: string;
     supportLevel: number;
     childAge: number | null;
@@ -125,11 +121,10 @@ export default function OnboardingPage() {
         throw new Error("Втрачено роль користувача. Оберіть її заново.");
       }
 
-      // Викликаємо Server Action
       const response = await submitOnboardingAction({
         userId: user.id,
         role: role,
-        childName: childData.childName, // 🌟 Надійно передаємо введене ім'я дитини
+        childName: childData.childName,
         childProfile: childData.childProfile,
         supportLevel: childData.supportLevel,
         childAge: childData.childAge,
@@ -141,7 +136,7 @@ export default function OnboardingPage() {
         router.push("/dashboard");
         router.refresh();
       } else {
-        setErrorMessage(response.error || "Сталася ошибка при збереженні.");
+        setErrorMessage(response.error || "Сталася помилка при збереженні.");
         setSubmitLoading(false);
       }
     } catch (err: any) {
@@ -166,7 +161,6 @@ export default function OnboardingPage() {
         </div>
       )}
 
-      {/* Диригент кроків форми */}
       {step === 1 && (
         <RoleForm onComplete={handleRoleComplete} initialRole={role} />
       )}
@@ -189,7 +183,7 @@ export default function OnboardingPage() {
             programId,
           }}
           onChangeValues={(vals) => {
-            if (vals.childName !== undefined) setChildName(vals.childName); // 🌟 Трекаємо зміну імені
+            if (vals.childName !== undefined) setChildName(vals.childName);
             if (vals.childProfile !== undefined)
               setChildProfile(vals.childProfile);
             if (vals.supportLevel !== undefined)
