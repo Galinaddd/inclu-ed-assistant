@@ -3,6 +3,7 @@
 import { createServerConnection } from "../utils/supabase/server";
 import { uploadTextToR2, downloadTextFromR2 } from "../utils/r2/r2-helpers";
 import { generateSourceKey, generateAdaptedKey } from "../utils/r2/naming";
+import { parseNewBookWithAI } from "../utils/r2/parser-helper";
 // import { SubjectData, BookData } from "../../types"; // Зверніть увагу: файл index підтягнеться сам!
 
 export interface BookData {
@@ -183,5 +184,78 @@ export async function getAdaptedMaterialContent(r2Key: string) {
   } catch (error: any) {
     console.error("Помилка getAdaptedMaterialContent:", error.message);
     return { success: false, error: error.message, data: "" };
+  }
+}
+
+/**
+ * Крок 3: Всеукраїнська дедуплікація та ліниве створення глобальної книги за SHA-256
+ */
+export async function checkAndRegisterBook({
+  fileHash,
+  subjectId,
+  schoolClass,
+  programId,
+  fileName,
+  fileBase64,
+}: {
+  fileHash: string;
+  subjectId: string;
+  schoolClass: number;
+  programId: string | null;
+  fileName: string;
+  fileBase64: string;
+}) {
+  try {
+    const supabase = await createServerConnection();
+
+    // 1. Шукаємо книгу у ВСІЙ базі за унікальним відбитком (Глобальний пошук)
+    const { data: existingBook, error: searchError } = await supabase
+      .from("books")
+      .select("id, title, publisher, publishing_year")
+      .eq("file_hash", fileHash)
+      .maybeSingle();
+
+    if (searchError) throw searchError;
+
+    // СЦЕНАРІЙ А: Книгу вже оцифровано кимось в Україні. Повертаємо її моментально!
+    if (existingBook) {
+      return {
+        success: true,
+        isDuplicate: true,
+        data: existingBook as BookData,
+      };
+    }
+
+    // СЦЕНАРІЙ Б: Книга абсолютно нова для системи. Запускаємо лінивий ШІ-парсинг.
+    const aiParsedResult = await parseNewBookWithAI(fileHash, fileBase64);
+
+    // Зберігаємо запис у глобальну таблицю книг з прив'язкою до поточної сітки
+    const { data: newBook, error: insertError } = await supabase
+      .from("books")
+      .insert({
+        title:
+          aiParsedResult.title !== "Підручник адаптовано нейромережею"
+            ? aiParsedResult.title
+            : fileName.replace(".pdf", ""),
+        publisher: aiParsedResult.publisher,
+        publishing_year: aiParsedResult.publishing_year,
+        subject_id: subjectId,
+        school_class: schoolClass,
+        program_id: programId,
+        file_hash: fileHash,
+      })
+      .select("id, title, publisher, publishing_year")
+      .single();
+
+    if (insertError) throw insertError;
+
+    return {
+      success: true,
+      isDuplicate: false,
+      data: newBook as BookData,
+    };
+  } catch (error: any) {
+    console.error("Помилка в екшені checkAndRegisterBook:", error.message);
+    return { success: false, error: error.message };
   }
 }

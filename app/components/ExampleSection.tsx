@@ -4,7 +4,7 @@ import React, { useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 export default function ExampleSection() {
-  // Локальний стан суто для відстеження активної вкладки
+  // Локальний стан для миттєвого перемикання кольору
   const [currentTab, setCurrentTab] = useState("simple");
 
   return (
@@ -16,7 +16,7 @@ export default function ExampleSection() {
         {/* БЛОК 1: Картка супроводу уроку за стандартами МОН */}
         <div className="mb-6 p-4 bg-slate-50 border-2 border-slate-200 rounded-2xl">
           <h3 className="text-sm font-black text-[#0F172A] uppercase tracking-wider mb-3 flex items-center gap-2">
-            📋 Картка педагогичного супроводу уроку
+            📋 Картка педагогічного suprovodu уроку
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs md:text-sm font-bold text-slate-700">
             <div className="bg-white p-3 rounded-xl border border-slate-200">
@@ -59,29 +59,50 @@ export default function ExampleSection() {
               </h2>
             </div>
 
-            {/* ПАНЕЛЬ КНОПОК: Повністю очищена від інлайн-стилів, кольори вирівняні за ТЗ */}
+            {/* ПАНЕЛЬ КНОПОК: Пряме забарвлення через HEX-палітру в обхід багів Tailwind */}
             <div className="w-full xl:w-auto overflow-x-auto no-scrollbar -mx-4 px-4 sm:mx-0 sm:px-0">
               <TabsList className="bg-[#FAF9F6] p-1.5 rounded-2xl border-2 border-slate-200 min-w-[500px] sm:min-w-0 flex w-full h-auto gap-1">
-                {/* Вкладка 1: Спрощений текст (Колір: Ваше Небо sky-400/40) */}
+                {/* Вкладка 1: Спрощений текст (Колір: Світле Небо) */}
                 <TabsTrigger
                   value="simple"
-                  className="flex-1 text-center py-2.5 text-xs md:text-sm font-black rounded-xl transition-all border-0 cursor-pointer data-[state=active]:bg-sky-400/40 data-[state=active]:text-sky-950 text-slate-600 hover:bg-slate-100"
+                  style={{
+                    backgroundColor:
+                      currentTab === "simple" ? "#E0F2FE" : "transparent",
+                    borderColor:
+                      currentTab === "simple" ? "#38BDF8" : "transparent",
+                    color: currentTab === "simple" ? "#0369A1" : "#475569",
+                  }}
+                  className="flex-1 text-center py-2.5 text-xs md:text-sm font-black rounded-xl transition-all border-2 cursor-pointer focus:outline-hidden active:scale-95"
                 >
                   📖 Спрощений текст
                 </TabsTrigger>
 
-                {/* Вкладка 2: Покрокові картки (Колір: Ваш Смарагд emerald-400/40) */}
+                {/* Вкладка 2: Покрокові картки (Колір: Світлий Смарагд) */}
                 <TabsTrigger
                   value="steps"
-                  className="flex-1 text-center py-2.5 text-xs md:text-sm font-black rounded-xl transition-all border-0 cursor-pointer data-[state=active]:bg-emerald-400/40 data-[state=active]:text-emerald-950 text-slate-600 hover:bg-slate-100"
+                  style={{
+                    backgroundColor:
+                      currentTab === "steps" ? "#E6F4EA" : "transparent",
+                    borderColor:
+                      currentTab === "steps" ? "#34A853" : "transparent",
+                    color: currentTab === "steps" ? "#137333" : "#475569",
+                  }}
+                  className="flex-1 text-center py-2.5 text-xs md:text-sm font-black rounded-xl transition-all border-2 cursor-pointer focus:outline-hidden active:scale-95"
                 >
                   🧱 Покрокові картки
                 </TabsTrigger>
 
-                {/* Вкладка 3: Казка-метафора (Колір: Ваш Бурштин amber-400/40) */}
+                {/* Вкладка 3: Казка-метафора (Колір: Світлий Бурштин) */}
                 <TabsTrigger
                   value="story"
-                  className="flex-1 text-center py-2.5 text-xs md:text-sm font-black rounded-xl transition-all border-0 cursor-pointer data-[state=active]:bg-amber-400/40 data-[state=active]:text-amber-950 text-slate-600 hover:bg-slate-100"
+                  style={{
+                    backgroundColor:
+                      currentTab === "story" ? "#FEF3C7" : "transparent",
+                    borderColor:
+                      currentTab === "story" ? "#F59E0B" : "transparent",
+                    color: currentTab === "story" ? "#B45309" : "#475569",
+                  }}
+                  className="flex-1 text-center py-2.5 text-xs md:text-sm font-black rounded-xl transition-all border-2 cursor-pointer focus:outline-hidden active:scale-95"
                 >
                   ✨ Казка-метафора
                 </TabsTrigger>
@@ -164,7 +185,7 @@ export default function ExampleSection() {
                   </h4>
                 </div>
                 <p className="text-xs font-medium text-slate-700 mt-1">
-                  Листочок має маленькі невидимі ротики для вдиху повітря.
+                  Листочок вдихає повітря, щоб змішати його з водою та сонцем.
                 </p>
               </div>
 
@@ -178,38 +199,33 @@ export default function ExampleSection() {
                   </h4>
                 </div>
                 <p className="text-xs font-medium text-slate-700 mt-1">
-                  Сонце, вода та повітря змішуються — рослина отримує корисну
-                  їжу.
+                  Рослина сита, росте великою і виділяє чистий кисень для нас.
                 </p>
               </div>
             </TabsContent>
 
-            {/* Контент 3: Казка-метафора для домашнього розбору (family flow) */}
+            {/* Контент 3: Казка-метафора */}
             <TabsContent
               value="story"
               className="space-y-4 max-w-3xl focus-visible:outline-none"
             >
-              <div className="border-l-4 border-amber-400 bg-amber-50/50 p-4 rounded-r-2xl border-y border-r border-slate-200">
-                <p className="text-xs font-bold text-amber-900 uppercase tracking-wider mb-1">
-                  🏡 Гілка Батьків (Зона мами):
+              <p className="text-base md:text-lg text-slate-800 leading-relaxed font-semibold">
+                Уяви, що кожен зелений листочок — це маленька затишна кухня, де
+                живе добрий шеф-кухар на ім'я Хлорофіл. Він готує найсмачніший у
+                світі цукровий сироп для свого дерева.
+              </p>
+              <div className="p-5 bg-amber-50/40 border-2 border-amber-200 rounded-2xl space-y-3">
+                <p className="font-black text-amber-950 text-sm uppercase tracking-wider">
+                  🧙‍♂️ Секретний рецепт чарівного сиропу:
                 </p>
-                <p className="text-xs font-medium text-slate-600">
-                  Прочитайте дитині цю історію. Ви можете взяти зелений листок
-                  кімнатної рослини або деталь LEGO, щоб показати «кухню»
-                  наочно.
+                <p className="text-sm font-medium text-slate-700 leading-relaxed">
+                  Кухар бере промінчик сонячного тепла, додає краплинку свіжої
+                  підземної водички та дрібку повітряного вітерцю. Потім він
+                  весело перемішує все своїми зеленими долоньками. Коли обід
+                  готовий, дерево солодко засинає і дарує нашому лісу чисте
+                  повітря для дихання!
                 </p>
               </div>
-              <p className="text-base md:text-lg text-slate-800 leading-relaxed font-semibold">
-                Жив-був маленький зелений Листочок. Він був справжнім кухарем!
-                Щоранку він прокидався, відкривав свої зелені долоньки назустріч
-                Сонечку і казав: «Час готувати обід!».
-              </p>
-              <p className="text-base md:text-lg text-slate-800 leading-relaxed font-medium">
-                Корінь-помічник передавав йому по довгому ліфту-стеблу чисту
-                водичку, а сам Листочок ловив промінчики світла. Він змішував їх
-                у своїй чарівній каструльці, і так з'являлася смачна їжа, яка
-                допомагала всьому дереву рости великим та сильним.
-              </p>
             </TabsContent>
           </div>
         </Tabs>

@@ -5,6 +5,8 @@ import { createClientConnection } from "../utils/supabase/client";
 import { getSubjectsByChild, getBooksBySubject } from "./actions";
 import { Loader2, BookOpen, FileText, CheckCircle2 } from "lucide-react";
 import UploadBookModal from "./_components/UploadBookModal";
+import MainFormContainer from "./_components/MainFormContainer";
+import { ActiveTabType } from "./_components/FormTabs";
 
 interface ChildProfile {
   id: string;
@@ -49,10 +51,8 @@ export default function DashboardPage() {
   const [activeBook, setActiveBook] = useState<BookData | null>(null);
   const [loadingBooks, setLoadingBooks] = useState(false);
 
-  const [inputText, setInputText] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [isPending, startTransition] = useTransition();
-
   const [isUploadOpen, setIsUploadOpen] = useState(false);
 
   // 1. Дебаг бази даних у браузері
@@ -154,35 +154,26 @@ export default function DashboardPage() {
       setLoadingBooks(false);
     });
   }, [activeSubject, activeChild]);
-
-  const handleAdaptationSubmit = () => {
-    if (!inputText.trim()) return;
-    setIsGenerating(true);
-    setTimeout(() => {
-      setIsGenerating(false);
-      alert("Матеріал успішно адаптовано!");
-    }, 2000);
-  };
   return (
-    <div className="bg-[#FAF9F6] font-sans text-slate-900 flex flex-col justify-between min-h-[calc(100vh-88px)]">
+    <div className="bg-background font-sans text-foreground flex flex-col justify-between min-h-[calc(100vh-88px)]">
       <main className="max-w-6xl mx-auto px-4 md:px-6 py-4 flex-grow w-full grid grid-cols-1 lg:grid-cols-12 gap-6 relative z-10">
         {/* ЛІВА ПАНЕЛЬ — СПИСОК УЧНІВ */}
         <div className="lg:col-span-4 flex flex-col gap-4 w-full">
-          <div className="bg-white border-2 border-slate-200 p-5 rounded-2xl shadow-xs text-left w-full">
+          <div className="bg-card border-2 border-border p-5 rounded-3xl shadow-xs text-left w-full">
             <div className="flex justify-between items-center mb-4">
-              <h2 className="font-black text-base text-slate-900 flex items-center gap-2">
+              <h2 className="font-black text-base text-foreground flex items-center gap-2">
                 🧠 Налаштування ШІ-адаптації
               </h2>
               <a
                 href="/onboarding"
-                className="text-[11px] font-black bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-xl transition-colors cursor-pointer shrink-0"
+                className="text-[11px] font-black bg-secondary hover:bg-secondary/80 text-foreground px-2.5 py-1.5 rounded-xl transition-colors cursor-pointer shrink-0"
               >
                 + Додати
               </a>
             </div>
 
             {loadingChildren ? (
-              <div className="py-6 text-center text-xs font-bold text-slate-400 animate-pulse">
+              <div className="py-6 text-center text-xs font-bold text-muted-foreground/60 animate-pulse">
                 Зчитуємо картки учнів з бази...
               </div>
             ) : children.length > 0 ? (
@@ -193,22 +184,22 @@ export default function DashboardPage() {
                     <button
                       key={child.id}
                       onClick={() => setActiveChild(child)}
-                      className={`snap-center shrink-0 w-[260px] lg:w-full text-left p-4 rounded-xl border-2 transition-all cursor-pointer flex flex-col gap-1.5 focus:outline-none focus-visible:ring-4 focus-visible:ring-emerald-600/40 ${
+                      className={`snap-center shrink-0 w-[260px] lg:w-full text-left p-4 rounded-xl border-2 transition-all cursor-pointer flex flex-col gap-1.5 focus:outline-hidden ${
                         isActive
-                          ? "bg-emerald-50/40 border-emerald-500 shadow-xs"
-                          : "bg-white border-slate-100 hover:border-slate-300"
+                          ? "bg-emerald-active/10 border-emerald-active shadow-xs"
+                          : "bg-card border-border hover:border-foreground/10"
                       }`}
                     >
-                      <p className="text-sm font-black text-slate-900 flex justify-between items-center gap-2">
+                      <p className="text-sm font-black text-foreground flex justify-between items-center gap-2">
                         <span className="truncate">👶 {child.child_name}</span>
                         {isActive && (
-                          <span className="text-[9px] bg-emerald-700 text-white px-1.5 py-0.5 rounded-md font-black uppercase tracking-wider shrink-0">
+                          <span className="text-[9px] bg-emerald-active text-background px-1.5 py-0.5 rounded-md font-black uppercase tracking-wider shrink-0">
                             Активний
                           </span>
                         )}
                       </p>
 
-                      <div className="flex gap-3 text-[11px] font-bold text-slate-400">
+                      <div className="flex gap-3 text-[11px] font-bold text-muted-foreground/70">
                         {child.child_age && (
                           <span>🎂 Вік: {child.child_age} р.</span>
                         )}
@@ -217,7 +208,7 @@ export default function DashboardPage() {
                         )}
                       </div>
 
-                      <p className="text-xs font-bold text-slate-700 truncate pt-1 border-t border-dashed border-slate-100 w-full text-left">
+                      <p className="text-xs font-bold text-foreground/80 truncate pt-1 border-t border-dashed border-border w-full text-left">
                         🧬 {child.ref_diagnoses?.title || "Діагноз не вказано"}
                       </p>
                     </button>
@@ -225,139 +216,147 @@ export default function DashboardPage() {
                 })}
               </div>
             ) : (
-              <div className="text-center py-6 text-xs font-bold text-slate-400">
+              <div className="text-center py-6 text-xs font-bold text-muted-foreground/60">
                 Немає доданих профілів дітей.
               </div>
             )}
           </div>
         </div>
 
-        {/* ПРАВА ПАНЕЛЬ — ДИНАМІЧНИЙ ВИВІД ПРЕДМЕТІВ ТА ПІДРУЧНИКІВ */}
-        <div className="lg:col-span-8 flex flex-col gap-6 w-full text-left">
-          {/* СЕКЦІЯ 1: СІТКА НАВЧАЛЬНИХ ПРЕДМЕТІВ */}
-          {activeChild && (
-            <div className="bg-white border-2 border-slate-200 p-5 rounded-2xl shadow-xs w-full">
-              <h3 className="text-sm font-black text-slate-900 mb-3 flex items-center gap-2">
-                📂 Предмети програми для {activeChild.child_name} (
-                {activeChild.school_class} клас)
-              </h3>
-
-              {loadingSubjects ? (
-                <div className="flex items-center gap-2 text-xs font-bold text-slate-400 py-2 animate-pulse">
-                  <Loader2 className="h-4 w-4 animate-spin text-emerald-700" />
-                  <span>Зчитуємо предмети...</span>
+        {/* ПРАВА ПАНЕЛЬ — ГОЛОВНА РОБОЧА ЗОНА ВВЕДЕННЯ */}
+        <div className="lg:col-span-8 flex flex-col gap-5 w-full">
+          {activeChild ? (
+            <div className="space-y-5 w-full">
+              {/* ДИНАМІЧНИЙ ВИВІД ПРЕДМЕТІВ ТА КНИГ (ЯКЩО ВОНИ Є) */}
+              {/* 📚 ВИШУКАНА ПАСТЕЛЬНО-ЖОВТА СІТКА ПРЕДМЕТІВ — ЛЕГКА І КОНТРАСТНА */}
+              {/* 📚 ІДЕАЛЬНИЙ ПАСТЕЛЬНО-ЖОВТИЙ СТАН ПРЕДМЕТІВ — ОПТИМАЛЬНА ГЛИБИНА */}
+              {/* 📚 ОНОВЛЕНА СІТКА ПРЕДМЕТІВ: ШИРОКІ, ОБ'ЄМНІ ТА НІЖНО-ЖОВТІ КНОПКИ */}
+              {/* 📚 ІДЕАЛЬНА ЗОЛОТА СЕРЕДИНА СІТКИ ПРЕДМЕТІВ: АКУРАТНІ, СТИЛЬНІ ТА КОМПАКТНІ КНОПКИ */}
+              {subjects.length > 0 && (
+                <div className="bg-card border-2 border-border p-5 rounded-3xl shadow-xs text-left w-full space-y-3 animate-in fade-in duration-200">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">
+                    📚 Оберіть предмет для {activeChild.child_name}:
+                  </p>
+                  {/* Зменшили gap-2 до gap-1.5 для більшої компактності */}
+                  <div className="flex flex-wrap gap-1.5">
+                    {subjects.map((subj) => {
+                      const isSubjActive = activeSubject?.id === subj.id;
+                      return (
+                        <button
+                          key={subj.id}
+                          onClick={() => setActiveSubject(subj)}
+                          /* px-4 py-2 — ідеальний розмір, без кричущої ширини */
+                          className={`px-4 py-2 rounded-xl text-xs font-bold border-2 transition-all cursor-pointer focus:outline-hidden active:scale-95 ${
+                            isSubjActive
+                              ? "bg-amber-100/90 border-amber-400 text-slate-900 shadow-3xs font-black"
+                              : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"
+                          }`}
+                        >
+                          {subj.subject_name}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
-              ) : subjects.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                  {subjects.map((subject) => {
-                    const isSubActive = activeSubject?.id === subject.id;
-                    return (
-                      <button
-                        key={subject.id}
-                        onClick={() => setActiveSubject(subject)}
-                        className={`text-xs font-bold px-3 py-2 rounded-xl border-2 transition-all cursor-pointer focus:outline-none ${
-                          isSubActive
-                            ? "bg-slate-900 border-slate-900 text-white shadow-xs"
-                            : "bg-white border-slate-200 hover:border-slate-300 text-slate-700"
-                        }`}
-                      >
-                        {subject.subject_name}
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : (
-                <p className="text-xs font-bold text-slate-400 py-2">
-                  Предмети програми відсутні в базі.
-                </p>
               )}
-            </div>
-          )}
 
-          {/* СЕКЦІЯ 2: СІТКА ПІДРУЧНИКІВ АВТОРІВ + КНОПКА ДОДАТИ КНИГУ */}
-          {activeSubject && (
-            <div className="bg-white border-2 border-slate-200 p-5 rounded-2xl shadow-xs w-full animate-in fade-in slide-in-from-top-1 duration-200">
-              <h3 className="text-sm font-black text-slate-900 mb-3 flex items-center gap-2">
-                📚 Доступні підручники з предмета «{activeSubject.subject_name}»
-              </h3>
+              {/* СІТКА КНИЖОК З ОНОВЛЕНИМ СМАРАГДОВИМ КОЛЬОРОМ АКТИВНОЇ КАРТКИ */}
+              {activeSubject && (
+                <div className="bg-card border-2 border-border p-5 rounded-3xl shadow-xs text-left w-full space-y-3">
+                  <p className="text-[10px] font-black text-muted-foreground/60 uppercase tracking-wider">
+                    📖 Підручники з предмету ({activeSubject.subject_name}):
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {/* 📖 ОНОВЛЕНА СІТКА КНИЖОК У ВАШИХ ФІРМОВИХ КОЛЬОРАХ */}
+                    {books.map((book) => {
+                      const isBookActive = activeBook?.id === book.id;
+                      return (
+                        <button
+                          key={book.id}
+                          onClick={() => setActiveBook(book)}
+                          className={`p-4 rounded-xl border-2 text-left transition-all cursor-pointer flex items-center gap-3 ${
+                            isBookActive
+                              ? "bg-amber-400 border-amber-500 text-slate-900 shadow-sm font-black" // 🔥 Наш гарний соковитий жовтий, як на кнопці спроб!
+                              : "bg-white border-slate-200 text-slate-700 hover:border-slate-300"
+                          }`}
+                        >
+                          <BookOpen
+                            className={`h-5 w-5 shrink-0 ${isBookActive ? "text-slate-900" : "text-slate-400"}`}
+                          />
+                          <div className="truncate">
+                            <p className="text-xs font-black truncate">
+                              {book.title}
+                            </p>
+                            <p
+                              className={`text-[10px] font-bold mt-0.5 ${isBookActive ? "text-slate-800" : "text-slate-400"}`}
+                            >
+                              {book.publisher || "Глобальний каталог"}{" "}
+                              {book.publishing_year
+                                ? `• ${book.publishing_year}`
+                                : ""}
+                            </p>
+                          </div>
+                        </button>
+                      );
+                    })}
 
-              {loadingBooks ? (
-                <div className="flex items-center gap-2 text-xs font-bold text-slate-400 py-4 animate-pulse">
-                  <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
-                  <span>Шукаємо підручники авторів...</span>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {/* Перебір існуючих книг з бази даних */}
-                  {books.map((book) => {
-                    const isBookActive = activeBook?.id === book.id;
-                    return (
-                      <button
-                        key={book.id}
-                        onClick={() => setActiveBook(book)}
-                        className={`text-left p-4 rounded-xl border-2 transition-all cursor-pointer flex items-start gap-3 h-auto focus:outline-none ${
-                          isBookActive
-                            ? "bg-indigo-50/40 border-indigo-500 shadow-xs"
-                            : "bg-white border-slate-200 hover:border-slate-300"
-                        }`}
-                      >
-                        <BookOpen
-                          className={`h-5 w-5 mt-0.5 shrink-0 ${isBookActive ? "text-indigo-600" : "text-slate-400"}`}
-                        />
-                        <div className="flex flex-col gap-0.5 min-w-0">
-                          <p className="text-xs font-black text-slate-900 break-words whitespace-normal leading-tight">
-                            {book.title}
-                          </p>
-                          <p className="text-[10px] font-bold text-slate-400 truncate">
-                            {book.publisher || "Видавництво"}{" "}
-                            {book.publishing_year
-                              ? `• ${book.publishing_year} р.`
-                              : ""}
-                          </p>
-                        </div>
-                      </button>
-                    );
-                  })}
-
-                  {/* ➕ КНОПКА: Додати новий підручник — ВІДКРИВАЄ НАШЕ ВІКНО */}
-                  <button
-                    onClick={() => setIsUploadOpen(true)}
-                    className="text-left p-4 rounded-xl border-2 border-dashed border-slate-300 hover:border-indigo-400 bg-slate-50/50 hover:bg-indigo-50/20 transition-all cursor-pointer flex items-center gap-3 group focus:outline-none focus-visible:ring-4 focus-visible:ring-indigo-400/20 w-full"
-                  >
-                    <div className="h-8 w-8 rounded-lg bg-white border border-slate-200 flex items-center justify-center shrink-0 group-hover:border-indigo-200 transition-colors">
-                      <span className="text-slate-400 group-hover:text-indigo-600 font-black text-sm">
+                    {/* КАРТКА-ПЛЮСИК ДЛЯ ВІДКРИТТЯ МОДАЛКИ ЗАВАНТАЖЕННЯ */}
+                    <button
+                      onClick={() => setIsUploadOpen(true)}
+                      className="p-4 rounded-xl border-2 border-dashed border-border bg-card/40 hover:bg-card hover:border-foreground/20 text-left transition-all cursor-pointer flex items-center gap-3 text-muted-foreground/70 font-black text-xs"
+                    >
+                      <span className="h-5 w-5 border-2 border-dashed border-border rounded-md flex items-center justify-center font-black text-sm text-center shrink-0">
                         +
                       </span>
-                    </div>
-                    <div className="flex flex-col gap-0.5">
-                      <p className="text-xs font-black text-slate-700 group-hover:text-indigo-600 transition-colors">
-                        Додати новий підручник
-                      </p>
-                      <p className="text-[10px] font-bold text-slate-400">
-                        Завантажити PDF файл
-                      </p>
-                    </div>
-                  </button>
+                      <span>Додати новий підручник</span>
+                    </button>
+                  </div>
                 </div>
               )}
-            </div>
-          )}
 
-          {/* Якщо нічого не обрано — підказка */}
-          {!activeChild && (
-            <div className="bg-white border-2 border-dashed border-slate-200 p-8 rounded-2xl text-center text-sm font-bold text-slate-400 shadow-xs">
-              👈 Оберіть профіль учня зліва, щоб відобразити предмети
+              {/* НАША НОВА АТОМАРНА ДЕКОМПОНОВАНА ФОРМА ВВЕДЕННЯ */}
+              <MainFormContainer
+                isGenerating={isGenerating}
+                onSubmit={async (formData) => {
+                  setIsGenerating(true);
+                  console.log("Данні форми для ШІ:", formData);
+                  console.log("Параметри дитини:", activeChild);
+                  console.log("Обраний предмет:", activeSubject);
+                  console.log("Обрана книга:", activeBook);
+
+                  setTimeout(() => {
+                    setIsGenerating(false);
+                    alert(
+                      `Успішно! Матеріал надіслано на ШІ-адаптацію для ${activeChild.child_name}`,
+                    );
+                  }, 2500);
+                }}
+              />
+            </div>
+          ) : (
+            <div className="bg-card border-2 border-border p-8 rounded-3xl text-center text-xs font-bold text-muted-foreground/60 shadow-xs flex flex-col items-center justify-center min-h-[280px]">
+              <p className="max-w-xs break-words whitespace-normal leading-relaxed">
+                👈 Будь ласка, оберіть картку учня або дитини на лівій панелі,
+                щоб активувати ШІ-простір адаптації під її індивідуальні освітні
+                потреби.
+              </p>
             </div>
           )}
         </div>
       </main>
 
-      {/* НАШЕ МІКРО-МОДАЛЬНЕ ВІКНО ЗАВАНТАЖЕННЯ КНИГ */}
+      {/* МОДАЛЬНЕ ВІКНО ДЕДУПЛІКАЦІЇ КНИГ */}
       <UploadBookModal
         isOpen={isUploadOpen}
         onClose={() => setIsUploadOpen(false)}
-        subjectName={activeSubject?.subject_name || "Предмет"}
-        schoolClass={activeChild?.school_class || 1}
+        subjectName={activeSubject?.subject_name || "Невідомий предмет"}
+        schoolClass={activeChild?.school_class || 0}
+        subjectId={activeSubject?.id || ""}
+        programId={activeChild?.program_id || null}
+        onSuccess={(newBook) => {
+          setBooks((prev) => [...prev, newBook]);
+          setIsUploadOpen(false);
+        }}
       />
     </div>
   );
