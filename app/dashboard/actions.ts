@@ -4,7 +4,7 @@ import { createServerConnection } from "../utils/supabase/server";
 import { uploadTextToR2, downloadTextFromR2 } from "../utils/r2/r2-helpers";
 import { generateSourceKey, generateAdaptedKey } from "../utils/r2/naming";
 import { parseNewBookWithAI } from "../utils/r2/parser-helper";
-// import { SubjectData, BookData } from "../../types"; // Зверніть увагу: файл index підтягнеться сам!
+import { runTextAdaptationPipeline } from "../utils/ai/adaptation-service"; // Наш декомпонований ШІ-пайплайн
 
 export interface BookData {
   id: string;
@@ -16,6 +16,14 @@ export interface BookData {
   subject_id: string | null;
   file_hash: string | null;
 }
+
+interface AdaptTextParams {
+  text: string;
+  childId: string;
+  userRole: "teacher" | "family";
+  subjectName: string;
+}
+
 /**
  * Крок 1: Строгий реляційний запит предметів програми
  */
@@ -118,7 +126,6 @@ export async function getSourceParagraphContent(r2Key: string) {
     return { success: false, error: error.message, data: "" };
   }
 }
-
 /**
  * ОПЕРАЦІЯ 3: ЗАПИС АДАПТОВАНОГО МАТЕРІАЛУ (Глобальний архів)
  */
@@ -256,6 +263,56 @@ export async function checkAndRegisterBook({
     };
   } catch (error: any) {
     console.error("Помилка в екшені checkAndRegisterBook:", error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * ОПЕРАЦІЯ 5: ТОНКИЙ ДЕКЛАРАТИВНИЙ ЕКШЕН АДАПТАЦІЇ ТЕКСТУ (Шлях Мами / Конспекти Вчителя)
+ * Результат пишеться у хмару R2 через утиліту, а посилання фіксується в історії.
+ */
+export async function adaptMaterialAction(params: AdaptTextParams) {
+  try {
+    const supabase = await createServerConnection();
+
+    // 1. Отримуємо user_id з поточної активної сесії Supabase
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    const userId = session?.user?.id || "anonymous_user_id";
+
+    // 2. Передаємо роботу нашому ізольованому утилітарному ШІ-пайплайну
+    const { aiText, autoTitle, r2Key } = await runTextAdaptationPipeline({
+      userId,
+      text: params.text,
+      childId: params.childId,
+      userRole: params.userRole,
+      subjectName: params.subjectName,
+    });
+
+    // 3. БОЙОВИЙ ЗАПИС ТЕКСТУ В CLOUDFLARE R2 за допомогою вашої рідної функції
+    await uploadTextToR2(r2Key, aiText);
+
+    // 4. ЗАПИС МЕТАДАНИХ В УНІВЕРСАЛЬНУ ТАБЛИЦЮ ІСТОРІЇ (Supabase)
+    const { error: dbError } = await supabase
+      .from("history_adaptations")
+      .insert({
+        user_id: userId,
+        child_id: params.childId || null,
+        book_id: null, // Суворо NULL — тригер для нічного pg_cron чищення особистих архівів!
+        paragraph_number: null,
+        title: autoTitle,
+        r2_path: r2Key, //-- Зберігаємо посилання на файл у хмарі R2
+      });
+
+    if (dbError) throw dbError;
+
+    return { success: true, data: aiText };
+  } catch (error: any) {
+    console.error(
+      "Помилка в декларативному екшені adaptMaterialAction:",
+      error.message,
+    );
     return { success: false, error: error.message };
   }
 }

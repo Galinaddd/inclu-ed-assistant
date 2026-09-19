@@ -38,3 +38,15 @@ export function generateAdaptedKey(params: {
   const cleanAuthor = normalizeAuthorName(params.author);
   return `generated-materials/${params.programSlug}/${params.targetSchoolClass}/${params.subjectId}/${cleanAuthor}_${params.year}/paragraph_${params.paragraphNumber}/level_${params.targetSupportLevel}_${params.targetDiagnosis}.txt`;
 }
+
+/**
+ * ГЕНЕРАТОР ШЛЯХУ ДЛЯ ПЕРСОНАЛЬНОГО АРХІВУ (Флоу №3 — Шлях Мами / Швидкий текст)
+ * Формує: personal-materials/[user_id]/[child_id]/[adaptation_uuid].txt
+ */
+export function generatePersonalKey(params: {
+  userId: string;
+  childId: string;
+  adaptationUuid: string;
+}): string {
+  return `personal-materials/${params.userId}/${params.childId}/${params.adaptationUuid}.txt`;
+}

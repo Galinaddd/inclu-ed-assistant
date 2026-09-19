@@ -2,7 +2,11 @@
 
 import React, { useEffect, useState, useTransition } from "react";
 import { createClientConnection } from "../utils/supabase/client";
-import { getSubjectsByChild, getBooksBySubject } from "./actions";
+import {
+  getSubjectsByChild,
+  getBooksBySubject,
+  adaptMaterialAction,
+} from "./actions";
 import { Loader2, BookOpen, FileText, CheckCircle2 } from "lucide-react";
 import UploadBookModal from "./_components/UploadBookModal";
 import MainFormContainer from "./_components/MainFormContainer";
@@ -54,6 +58,8 @@ export default function DashboardPage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isPending, startTransition] = useTransition();
   const [isUploadOpen, setIsUploadOpen] = useState(false);
+
+  const [aiResponse, setAiResponse] = useState<string>("");
 
   // 1. Дебаг бази даних у браузері
   useEffect(() => {
@@ -154,6 +160,7 @@ export default function DashboardPage() {
       setLoadingBooks(false);
     });
   }, [activeSubject, activeChild]);
+
   return (
     <div className="bg-background font-sans text-foreground flex flex-col justify-between min-h-[calc(100vh-88px)]">
       <main className="max-w-6xl mx-auto px-4 md:px-6 py-4 flex-grow w-full grid grid-cols-1 lg:grid-cols-12 gap-6 relative z-10">
@@ -174,7 +181,7 @@ export default function DashboardPage() {
 
             {loadingChildren ? (
               <div className="py-6 text-center text-xs font-bold text-muted-foreground/60 animate-pulse">
-                Зчитуємо картки учнів з бази...
+                Зчитуємо картки учнів з базы...
               </div>
             ) : children.length > 0 ? (
               <div className="flex flex-row lg:flex-col gap-3 overflow-x-auto lg:overflow-x-hidden lg:overflow-y-auto pb-3 lg:pb-0 max-h-none lg:max-w-none lg:max-h-[500px] snap-x snap-mandatory pr-1 scrollbar-thin">
@@ -222,22 +229,16 @@ export default function DashboardPage() {
             )}
           </div>
         </div>
-
         {/* ПРАВА ПАНЕЛЬ — ГОЛОВНА РОБОЧА ЗОНА ВВЕДЕННЯ */}
         <div className="lg:col-span-8 flex flex-col gap-5 w-full">
           {activeChild ? (
             <div className="space-y-5 w-full">
-              {/* ДИНАМІЧНИЙ ВИВІД ПРЕДМЕТІВ ТА КНИГ (ЯКЩО ВОНИ Є) */}
-              {/* 📚 ВИШУКАНА ПАСТЕЛЬНО-ЖОВТА СІТКА ПРЕДМЕТІВ — ЛЕГКА І КОНТРАСТНА */}
-              {/* 📚 ІДЕАЛЬНИЙ ПАСТЕЛЬНО-ЖОВТИЙ СТАН ПРЕДМЕТІВ — ОПТИМАЛЬНА ГЛИБИНА */}
-              {/* 📚 ОНОВЛЕНА СІТКА ПРЕДМЕТІВ: ШИРОКІ, ОБ'ЄМНІ ТА НІЖНО-ЖОВТІ КНОПКИ */}
-              {/* 📚 ІДЕАЛЬНА ЗОЛОТА СЕРЕДИНА СІТКИ ПРЕДМЕТІВ: АКУРАТНІ, СТИЛЬНІ ТА КОМПАКТНІ КНОПКИ */}
+              {/* 1. СІТКА ПРЕДМЕТІВ */}
               {subjects.length > 0 && (
                 <div className="bg-card border-2 border-border p-5 rounded-3xl shadow-xs text-left w-full space-y-3 animate-in fade-in duration-200">
                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">
                     📚 Оберіть предмет для {activeChild.child_name}:
                   </p>
-                  {/* Зменшили gap-2 до gap-1.5 для більшої компактності */}
                   <div className="flex flex-wrap gap-1.5">
                     {subjects.map((subj) => {
                       const isSubjActive = activeSubject?.id === subj.id;
@@ -245,10 +246,9 @@ export default function DashboardPage() {
                         <button
                           key={subj.id}
                           onClick={() => setActiveSubject(subj)}
-                          /* px-4 py-2 — ідеальний розмір, без кричущої ширини */
                           className={`px-4 py-2 rounded-xl text-xs font-bold border-2 transition-all cursor-pointer focus:outline-hidden active:scale-95 ${
                             isSubjActive
-                              ? "bg-amber-100/90 border-amber-400 text-slate-900 shadow-3xs font-black"
+                              ? "bg-amber-100/90 border-amber-400 text-slate-900 font-black shadow-3xs"
                               : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"
                           }`}
                         >
@@ -260,23 +260,22 @@ export default function DashboardPage() {
                 </div>
               )}
 
-              {/* СІТКА КНИЖОК З ОНОВЛЕНИМ СМАРАГДОВИМ КОЛЬОРОМ АКТИВНОЇ КАРТКИ */}
+              {/* 2. СІТКА КНИЖОК */}
               {activeSubject && (
-                <div className="bg-card border-2 border-border p-5 rounded-3xl shadow-xs text-left w-full space-y-3">
-                  <p className="text-[10px] font-black text-muted-foreground/60 uppercase tracking-wider">
+                <div className="bg-card border-2 border-border p-5 rounded-3xl shadow-xs text-left w-full space-y-3 animate-in fade-in duration-200">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">
                     📖 Підручники з предмету ({activeSubject.subject_name}):
                   </p>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {/* 📖 ОНОВЛЕНА СІТКА КНИЖОК У ВАШИХ ФІРМОВИХ КОЛЬОРАХ */}
                     {books.map((book) => {
                       const isBookActive = activeBook?.id === book.id;
                       return (
                         <button
                           key={book.id}
                           onClick={() => setActiveBook(book)}
-                          className={`p-4 rounded-xl border-2 text-left transition-all cursor-pointer flex items-center gap-3 ${
+                          className={`p-4 rounded-xl border-2 text-left transition-all cursor-pointer flex items-center gap-3 focus:outline-hidden ${
                             isBookActive
-                              ? "bg-amber-400 border-amber-500 text-slate-900 shadow-sm font-black" // 🔥 Наш гарний соковитий жовтий, як на кнопці спроб!
+                              ? "bg-amber-100/90 border-amber-400 text-slate-900 shadow-3xs font-black"
                               : "bg-white border-slate-200 text-slate-700 hover:border-slate-300"
                           }`}
                         >
@@ -284,7 +283,7 @@ export default function DashboardPage() {
                             className={`h-5 w-5 shrink-0 ${isBookActive ? "text-slate-900" : "text-slate-400"}`}
                           />
                           <div className="truncate">
-                            <p className="text-xs font-black truncate">
+                            <p className="text-xs font-black text-slate-900 truncate">
                               {book.title}
                             </p>
                             <p
@@ -300,12 +299,12 @@ export default function DashboardPage() {
                       );
                     })}
 
-                    {/* КАРТКА-ПЛЮСИК ДЛЯ ВІДКРИТТЯ МОДАЛКИ ЗАВАНТАЖЕННЯ */}
                     <button
+                      type="button"
                       onClick={() => setIsUploadOpen(true)}
-                      className="p-4 rounded-xl border-2 border-dashed border-border bg-card/40 hover:bg-card hover:border-foreground/20 text-left transition-all cursor-pointer flex items-center gap-3 text-muted-foreground/70 font-black text-xs"
+                      className="p-4 rounded-xl border-2 border-dashed border-slate-200 bg-white/40 hover:bg-white hover:border-slate-300 text-left transition-all cursor-pointer flex items-center gap-3 text-slate-500 font-black text-xs focus:outline-hidden"
                     >
-                      <span className="h-5 w-5 border-2 border-dashed border-border rounded-md flex items-center justify-center font-black text-sm text-center shrink-0">
+                      <span className="h-5 w-5 border-2 border-dashed border-slate-200 rounded-md flex items-center justify-center font-black text-sm text-center shrink-0">
                         +
                       </span>
                       <span>Додати новий підручник</span>
@@ -314,27 +313,51 @@ export default function DashboardPage() {
                 </div>
               )}
 
-              {/* НАША НОВА АТОМАРНА ДЕКОМПОНОВАНА ФОРМА ВВЕДЕННЯ */}
+              {/* 3. НАША БОЙОВА ФОРМА, ЗВ'ЯЗАНА З REАЛЬНИМ OpenAI ТА SUPABASE */}
               <MainFormContainer
                 isGenerating={isGenerating}
                 onSubmit={async (formData) => {
-                  setIsGenerating(true);
-                  console.log("Данні форми для ШІ:", formData);
-                  console.log("Параметри дитини:", activeChild);
-                  console.log("Обраний предмет:", activeSubject);
-                  console.log("Обрана книга:", activeBook);
+                  if (!formData.text.trim()) return;
 
-                  setTimeout(() => {
-                    setIsGenerating(false);
-                    alert(
-                      `Успішно! Матеріал надіслано на ШІ-адаптацію для ${activeChild.child_name}`,
+                  setIsGenerating(true);
+                  setAiResponse(""); // Очищуємо старий екран перед новим кліком
+
+                  // Викликаємо тонкий декларативний екшен
+                  const res = await adaptMaterialAction({
+                    text: formData.text,
+                    childId: activeChild.id,
+                    userRole: "family", // Тестуємо затишний квест Мами
+                    subjectName:
+                      activeSubject?.subject_name || "Загальний предмет",
+                  });
+
+                  setIsGenerating(false);
+
+                  if (res.success && res.data) {
+                    setAiResponse(res.data); // Жива казка летить на екран!
+                    console.log(
+                      "🚀 Запис в history_adaptations пройшов, ШІ відповів!",
                     );
-                  }, 2500);
+                  } else {
+                    alert(res.error || "Не вдалося отримати адаптацію від ШІ.");
+                  }
                 }}
               />
+
+              {/* 4. ТИМЧАСОВЕ ВИВЕДЕННЯ РЕЗУЛЬТАТУ ДЛЯ РОЗВІДКИ БОЄМ */}
+              {aiResponse && (
+                <div className="mt-5 p-6 bg-white border-2 border-slate-200 rounded-3xl shadow-3xs text-left animate-in fade-in duration-300">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-3">
+                    ✨ Жива відповідь OpenAI (Записано в базі та R2):
+                  </p>
+                  <div className="whitespace-pre-wrap font-sans text-sm text-slate-800 leading-relaxed font-semibold">
+                    {aiResponse}
+                  </div>
+                </div>
+              )}
             </div>
           ) : (
-            <div className="bg-card border-2 border-border p-8 rounded-3xl text-center text-xs font-bold text-muted-foreground/60 shadow-xs flex flex-col items-center justify-center min-h-[280px]">
+            <div className="bg-card border-2 border-border p-8 rounded-3xl text-center text-xs font-bold text-muted-foreground/60 shadow-xs flex flex-col items-center justify-center min-h-[280px] animate-in fade-in duration-200">
               <p className="max-w-xs break-words whitespace-normal leading-relaxed">
                 👈 Будь ласка, оберіть картку учня або дитини на лівій панелі,
                 щоб активувати ШІ-простір адаптації під її індивідуальні освітні
@@ -345,7 +368,7 @@ export default function DashboardPage() {
         </div>
       </main>
 
-      {/* МОДАЛЬНЕ ВІКНО ДЕДУПЛІКАЦІЇ КНИГ */}
+      {/* МОДАЛЬНЕ ВІКНО ДОДАННЯ ПІДРУЧНИКА */}
       <UploadBookModal
         isOpen={isUploadOpen}
         onClose={() => setIsUploadOpen(false)}
@@ -354,7 +377,7 @@ export default function DashboardPage() {
         subjectId={activeSubject?.id || ""}
         programId={activeChild?.program_id || null}
         onSuccess={(newBook) => {
-          setBooks((prev) => [...prev, newBook]);
+          setBooks((prev) => [...prev, newBook as BookData]);
           setIsUploadOpen(false);
         }}
       />
