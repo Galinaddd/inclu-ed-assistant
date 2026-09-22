@@ -3,19 +3,11 @@
 import { createServerConnection } from "../utils/supabase/server";
 import { uploadTextToR2, downloadTextFromR2 } from "../utils/r2/r2-helpers";
 import { generateSourceKey, generateAdaptedKey } from "../utils/r2/naming";
-import { parseNewBookWithAI } from "../utils/r2/parser-helper";
-import { runTextAdaptationPipeline } from "../utils/ai/adaptation-service"; // Наш декомпонований ШІ-пайплайн
-
-export interface BookData {
-  id: string;
-  title: string;
-  publishing_year: number | null;
-  publisher: string | null;
-  school_class: number;
-  program_id: string | null;
-  subject_id: string | null;
-  file_hash: string | null;
-}
+import { runTextAdaptationPipeline } from "../utils/ai/adaptation-service";
+import {
+  executeBookRegistrationPipeline,
+  BookData,
+} from "../utils/supabase/books";
 
 interface AdaptTextParams {
   text: string;
@@ -23,6 +15,11 @@ interface AdaptTextParams {
   userRole: "teacher" | "family";
   subjectName: string;
 }
+
+// ✨ Жорстка типізація повернення екшену для лікування фронтенду без костилів
+export type CheckBookResponse =
+  | { success: true; isDuplicate: boolean; data: BookData }
+  | { success: false; error: string; data?: never; isDuplicate?: never };
 
 /**
  * Крок 1: Строгий реляційний запит предметів програми
@@ -34,7 +31,6 @@ export async function getSubjectsByChild(
   try {
     if (!programId) return { success: true, data: [] };
     const supabase = await createServerConnection();
-
     const { data, error } = await supabase
       .from("program_subjects")
       .select("id, subject_name, program_id, school_class")
@@ -45,7 +41,7 @@ export async function getSubjectsByChild(
     if (error) throw error;
     return { success: true, data: data || [] };
   } catch (error: any) {
-    console.error("Помилка в екшені getSubjectsByChild:", error.message);
+    console.error("Помилка в getSubjectsByChild:", error.message);
     return { success: false, error: error.message, data: [] };
   }
 }
@@ -59,7 +55,6 @@ export async function getBooksBySubject(
 ) {
   try {
     const supabase = await createServerConnection();
-
     const { data, error } = await supabase
       .from("books")
       .select("id, title, publisher, publishing_year")
@@ -70,32 +65,145 @@ export async function getBooksBySubject(
     if (error) throw error;
     return { success: true, data: (data as BookData[]) || [] };
   } catch (error: any) {
-    console.error("Помилка в екшені getBooksBySubject:", error.message);
+    console.error("Помилка в getBooksBySubject:", error.message);
     return { success: false, error: error.message, data: [] };
   }
 }
 
 /**
- * ОПЕРАЦІЯ 1: ЗАПИС ПОЧАТКОВОГО МАТЕРІАЛУ (Оригінальний параграф книги)
+ * Крок 3: Тонка декларативна обгортка дедуплікації підручників
  */
-export async function saveSourceParagraph(params: {
-  programId: string;
-  schoolClass: number;
+export async function checkAndRegisterBook(params: {
+  fileHash: string;
   subjectId: string;
-  author: string;
-  year: number;
-  bookId: string;
-  paragraphNumber: string;
-  chapterTitle: string;
-  contentMarkdown: string;
+  schoolClass: number;
+  programId: string | null;
+  fileName: string;
+  fileBase64: string;
+}): Promise<CheckBookResponse> {
+  try {
+    const supabase = await createServerConnection();
+    const result = await executeBookRegistrationPipeline(supabase, params);
+    return { success: true, ...result };
+  } catch (error: any) {
+    console.error("Помилка в checkAndRegisterBook:", error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * ОПЕРАЦІЯ 5: ТОНКИЙ ДЕКЛАРАТИВНИЙ ЕКШЕН АДАПТАЦІЇ ТЕКСТУ
+ */
+export async function adaptMaterialAction(params: AdaptTextParams) {
+  try {
+    const supabase = await createServerConnection();
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    const userId = session?.user?.id || "anonymous_user_id";
+
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("ai_credits_left")
+      .eq("id", userId)
+      .single();
+
+    if (profileError) throw profileError;
+    if (!profile || profile.ai_credits_left <= 0) {
+      throw new Error("Недостатньо кредитів для генерації.");
+    }
+
+    const { aiText, autoTitle, r2Key } = await runTextAdaptationPipeline({
+      userId,
+      text: params.text,
+      childId: params.childId,
+      userRole: params.userRole,
+      subjectName: params.subjectName,
+    });
+
+    await uploadTextToR2(r2Key, aiText);
+
+    const { error: dbError } = await supabase
+      .from("history_adaptations")
+      .insert({
+        user_id: userId,
+        child_id: params.childId || null,
+        book_id: null,
+        paragraph_number: null,
+        title: autoTitle,
+        r2_path: r2Key,
+      });
+
+    if (dbError) throw dbError;
+
+    await supabase
+      .from("profiles")
+      .update({ ai_credits_left: profile.ai_credits_left - 1 })
+      .eq("id", userId);
+
+    return { success: true, data: aiText };
+  } catch (error: any) {
+    console.error("Помилка в adaptMaterialAction:", error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * ОПЕРАЦІЯ 6: СТВОРЕННЯ КАРТКИ ДИТИНИ (АНТИ-ФРОД ОБМЕЖЕННЯ)
+ */
+export async function createChildProfileAction(childData: {
+  childName: string;
+  childProfile: string;
+  supportLevel: number;
+  childAge: number;
+  schoolClass: number;
+  programId: string | null;
 }) {
   try {
     const supabase = await createServerConnection();
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session?.user?.id) throw new Error("Користувач не авторизований.");
+
+    const { count, error: countError } = await supabase
+      .from("children_profiles")
+      .select("*", { count: "exact", head: true })
+      .eq("user_id", session.user.id);
+
+    if (countError) throw countError;
+    if (count !== null && count >= 3) {
+      throw new Error("Досягнуто ліміт карток дітей (макс. 3).");
+    }
+
+    const { data: newChild, error: insertError } = await supabase
+      .from("children_profiles")
+      .insert({
+        user_id: session.user.id,
+        child_name: childData.childName,
+        child_profile: childData.childProfile,
+        support_level: childData.supportLevel,
+        child_age: childData.childAge,
+        school_class: childData.schoolClass,
+        program_id: childData.programId,
+      })
+      .select()
+      .single();
+
+    if (insertError) throw insertError;
+    return { success: true, data: newChild };
+  } catch (error: any) {
+    console.error("Помилка в createChildProfileAction:", error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+export async function saveSourceParagraph(params: any) {
+  try {
+    const supabase = await createServerConnection();
     const r2Key = generateSourceKey(params);
-
     await uploadTextToR2(r2Key, params.contentMarkdown);
-
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from("book_contents")
       .insert({
         book_id: params.bookId,
@@ -105,55 +213,26 @@ export async function saveSourceParagraph(params: {
       })
       .select()
       .single();
-
-    if (error) throw error;
     return { success: true, data };
   } catch (error: any) {
-    console.error("Помилка при збереженні параграфа:", error.message);
     return { success: false, error: error.message };
   }
 }
 
-/**
- * ОПЕРАЦІЯ 2: ЧИТАННЯ ПОЧАТКОВОГО МАТЕРІАЛУ
- */
 export async function getSourceParagraphContent(r2Key: string) {
   try {
-    const text = await downloadTextFromR2(r2Key);
-    return { success: true, data: text };
+    return { success: true, data: await downloadTextFromR2(r2Key) };
   } catch (error: any) {
-    console.error("Помилка читання з Cloudflare R2:", error.message);
     return { success: false, error: error.message, data: "" };
   }
 }
-/**
- * ОПЕРАЦІЯ 3: ЗАПИС АДАПТОВАНОГО МАТЕРІАЛУ (Глобальний архів)
- */
-export async function saveAdaptedMaterial(params: {
-  userId: string;
-  childId: string;
-  bookId: string | null;
-  paragraphNumber: string;
-  subjectId: string;
-  category: string;
-  topicTitle: string;
-  targetDiagnosis: string;
-  targetSupportLevel: number;
-  targetSchoolClass: number;
-  targetChildAge: number;
-  targetProgramId: string | null;
-  author: string;
-  year: number;
-  adaptedContent: string;
-  programSlug: string;
-}) {
+
+export async function saveAdaptedMaterial(params: any) {
   try {
     const supabase = await createServerConnection();
     const r2Key = generateAdaptedKey(params);
-
     await uploadTextToR2(r2Key, params.adaptedContent);
-
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from("generated_materials")
       .insert({
         user_id: params.userId,
@@ -172,147 +251,16 @@ export async function saveAdaptedMaterial(params: {
       })
       .select()
       .single();
-
-    if (error) throw error;
     return { success: true, data };
   } catch (error: any) {
-    console.error("Помилка saveAdaptedMaterial:", error.message);
     return { success: false, error: error.message };
   }
 }
 
-/**
- * ОПЕРАЦІЯ 4: ЧИТАННЯ АДАПТОВАНОГО МАТЕРІАЛУ
- */
 export async function getAdaptedMaterialContent(r2Key: string) {
   try {
-    const text = await downloadTextFromR2(r2Key);
-    return { success: true, data: text };
+    return { success: true, data: await downloadTextFromR2(r2Key) };
   } catch (error: any) {
-    console.error("Помилка getAdaptedMaterialContent:", error.message);
     return { success: false, error: error.message, data: "" };
-  }
-}
-
-/**
- * Крок 3: Всеукраїнська дедуплікація та ліниве створення глобальної книги за SHA-256
- */
-export async function checkAndRegisterBook({
-  fileHash,
-  subjectId,
-  schoolClass,
-  programId,
-  fileName,
-  fileBase64,
-}: {
-  fileHash: string;
-  subjectId: string;
-  schoolClass: number;
-  programId: string | null;
-  fileName: string;
-  fileBase64: string;
-}) {
-  try {
-    const supabase = await createServerConnection();
-
-    // 1. Шукаємо книгу у ВСІЙ базі за унікальним відбитком (Глобальний пошук)
-    const { data: existingBook, error: searchError } = await supabase
-      .from("books")
-      .select("id, title, publisher, publishing_year")
-      .eq("file_hash", fileHash)
-      .maybeSingle();
-
-    if (searchError) throw searchError;
-
-    // СЦЕНАРІЙ А: Книгу вже оцифровано кимось в Україні. Повертаємо її моментально!
-    if (existingBook) {
-      return {
-        success: true,
-        isDuplicate: true,
-        data: existingBook as BookData,
-      };
-    }
-
-    // СЦЕНАРІЙ Б: Книга абсолютно нова для системи. Запускаємо лінивий ШІ-парсинг.
-    const aiParsedResult = await parseNewBookWithAI(fileHash, fileBase64);
-
-    // Зберігаємо запис у глобальну таблицю книг з прив'язкою до поточної сітки
-    const { data: newBook, error: insertError } = await supabase
-      .from("books")
-      .insert({
-        title:
-          aiParsedResult.title !== "Підручник адаптовано нейромережею"
-            ? aiParsedResult.title
-            : fileName.replace(".pdf", ""),
-        publisher: aiParsedResult.publisher,
-        publishing_year: aiParsedResult.publishing_year,
-        subject_id: subjectId,
-        school_class: schoolClass,
-        program_id: programId,
-        file_hash: fileHash,
-      })
-      .select("id, title, publisher, publishing_year")
-      .single();
-
-    if (insertError) throw insertError;
-
-    return {
-      success: true,
-      isDuplicate: false,
-      data: newBook as BookData,
-    };
-  } catch (error: any) {
-    console.error("Помилка в екшені checkAndRegisterBook:", error.message);
-    return { success: false, error: error.message };
-  }
-}
-
-/**
- * ОПЕРАЦІЯ 5: ТОНКИЙ ДЕКЛАРАТИВНИЙ ЕКШЕН АДАПТАЦІЇ ТЕКСТУ (Шлях Мами / Конспекти Вчителя)
- * Результат пишеться у хмару R2 через утиліту, а посилання фіксується в історії.
- */
-export async function adaptMaterialAction(params: AdaptTextParams) {
-  try {
-    const supabase = await createServerConnection();
-
-    // 1. Отримуємо user_id з поточної активної сесії Supabase
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    const userId = session?.user?.id || "anonymous_user_id";
-
-    // 2. Передаємо роботу нашому ізольованому утилітарному ШІ-пайплайну
-    const { aiText, autoTitle, r2Key } = await runTextAdaptationPipeline({
-      userId,
-      text: params.text,
-      childId: params.childId,
-      userRole: params.userRole,
-      subjectName: params.subjectName,
-    });
-
-    // 3. БОЙОВИЙ ЗАПИС ТЕКСТУ В CLOUDFLARE R2 за допомогою вашої рідної функції
-    await uploadTextToR2(r2Key, aiText);
-
-    // 4. ЗАПИС МЕТАДАНИХ В УНІВЕРСАЛЬНУ ТАБЛИЦЮ ІСТОРІЇ (Supabase)
-    const { error: dbError } = await supabase
-      .from("history_adaptations")
-      .insert({
-        user_id: userId,
-        child_id: params.childId || null,
-        book_id: null, // Суворо NULL — тригер для нічного pg_cron чищення особистих архівів!
-        paragraph_number: null,
-        title: autoTitle,
-        r2_path: r2Key, //-- Зберігаємо посилання на файл у хмарі R2
-      });
-
-    if (dbError) throw dbError;
-
-    return { success: true, data: aiText };
-  } catch (error: any) {
-    console.error(
-      "Помилка в декларативному екшені adaptMaterialAction:",
-      error.message,
-    );
-    return { success: false, error: error.message };
   }
 }

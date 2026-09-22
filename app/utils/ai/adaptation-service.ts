@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { generateAdaptationPrompt } from "./prompt-templates";
+import { generateSystemPrompt } from "./prompt-templates";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -22,46 +22,51 @@ export async function runTextAdaptationPipeline(params: {
     throw new Error("OPENAI_API_KEY відсутній у .env.local");
   }
 
-  // 1. Еталонні параметри профілю дитини (Тимчасовий бойовий зразок для тестування ядра)
+  // 1. Еталонні параметри профілю дитини (Живий зразок з бази)
   const mockChild = {
     childName: "Максимко",
     diagnosisTitle: "Розлади автистичного спектра (РАС)",
     aiInstructions:
-      "ROLE: Expert in Inclusive education for Autism Spectrum Disorder (ASD). Формуй жорстку покрокову інструкцію, уникай абстрактних метафор та двозначностей. Спрощуй складні речення на короткі тези.",
+      "Формуй жорстку покрокову інструкцію, уникай абстрактних метафор, алегорій та двозначностей. Спрощуй складні речення на короткі тези. Додавай інтерактивні чек-бокси [ ].",
     supportLevel: 3,
     schoolClass: 3,
     childAge: 8,
   };
 
-  // 2. Генерація промпту з правильними пропсами під вашу базу даних
-  const finalPrompt = generateAdaptationPrompt({
+  // 2. Розділяємо логіку на Системний закон та Вхідні дані користувача
+  const systemPrompt = generateSystemPrompt({
     childName: mockChild.childName,
-    diagnosisTitle: mockChild.diagnosisTitle, // 🔥 Виправлено: передаємо правильну назву пропса!
-    aiInstructions: mockChild.aiInstructions, // 🔥 Виправлено: інтегрували ядро інструкції з бази!
+    diagnosisTitle: mockChild.diagnosisTitle,
+    aiInstructions: mockChild.aiInstructions,
     supportLevel: mockChild.supportLevel,
     schoolClass: mockChild.schoolClass,
     childAge: mockChild.childAge,
     userRole: params.userRole,
     subjectName: params.subjectName,
-    rawText: params.text,
   });
 
-  // 3. Блискавичний та економний запит до gpt-4o-mini
+  // 3. Запит із ТЕМПЕРАТУРОЮ 0.15 (Захист від галюцинацій та видумок)
   const response = await openai.chat.completions.create({
     model: "gpt-4o-mini",
-    messages: [{ role: "user", content: finalPrompt }],
-    temperature: 0.6,
+    messages: [
+      { role: "system", content: systemPrompt },
+      {
+        role: "user",
+        content: `ОРИГІНАЛЬНИЙ ТЕКСТ ПАРАГРАФА ДЛЯ АДАПТАЦІЇ:\n\"\"\"\n${params.text}\n\"\"\"`,
+      },
+    ],
+    temperature: 0.15, // 🔥 Заземлюємо ШІ, щоб не вигадував дурниць
   });
 
   const aiText = response.choices?.[0]?.message?.content;
   if (!aiText) throw new Error("ШІ повернув порожню відповідь.");
 
-  // 4. ПРАВИЛО АВТО-НЕЙМІНГУ: обрізаємо перші 40 символів по слову з Паспорта
+  // 4. ПРАВИЛО АВТО-НЕЙМІНГУ
   let autoTitle = params.text.trim().substring(0, 40);
   if (params.text.length > 40) autoTitle += "...";
   if (params.userRole === "teacher") autoTitle = `Конспект: ${autoTitle}`;
 
-  // 5. Формуємо персональний ключ (Флоу №3 Шлях Мами / Конспекти)
+  // 5. Формуємо персональний ключ
   const adaptationUuid = crypto.randomUUID();
   const r2Key = `personal-materials/${params.userId}/${params.childId}/${adaptationUuid}.txt`;
 

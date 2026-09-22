@@ -11,7 +11,6 @@ import {
 import { calculateFileSHA256 } from "@/app/utils/crypto";
 import { checkAndRegisterBook } from "@/app/dashboard/actions";
 
-// Локальний інтерфейс пропсів згідно з правилом 3 Паспорту проєкту
 interface UploadBookModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -46,7 +45,6 @@ export default function UploadBookModal({
 
   if (!isOpen) return null;
 
-  // Обробка перетягування файлу (Drag & Drop)
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -87,7 +85,6 @@ export default function UploadBookModal({
     }
   };
 
-  // Клієнтська дедуплікація: прорахунок криптографічного відбитку через утиліту
   const handleTriggerHashing = async () => {
     if (!file) return;
     setIsPending(true);
@@ -95,46 +92,48 @@ export default function UploadBookModal({
     setFileHash("");
 
     try {
-      // 1. Обчислюємо SHA-256 відбиток на клієнті
       const computedHash = await calculateFileSHA256(file);
       setFileHash(computedHash);
 
-      // 2. Читаємо файл як Base64-рядок для безпечної передачі через Server Action
       const reader = new FileReader();
       reader.readAsDataURL(file);
 
       reader.onloadend = async () => {
-        const base64Result = reader.result as string;
-        const cleanBase64 = base64Result.split(",")[1]; // Беремо чистий base64 без префікса
+        try {
+          const base64Result = reader.result as string;
+          const cleanBase64 = base64Result.split(",")[1];
 
-        // 3. Викликаємо серверний екшен дедуплікації
-        const res = await checkAndRegisterBook({
-          fileHash: computedHash,
-          subjectId: subjectId,
-          schoolClass: schoolClass,
-          programId: programId,
-          fileName: file.name,
-          fileBase64: cleanBase64,
-        });
+          const res = await checkAndRegisterBook({
+            fileHash: computedHash,
+            subjectId: subjectId,
+            schoolClass: schoolClass,
+            programId: programId,
+            fileName: file.name,
+            fileBase64: cleanBase64,
+          });
 
-        if (res.success && res.data) {
-          // Передаємо об'єкт нової книги на дашборд! Саме це очікує setBooks
-          if (onSuccess) {
-            onSuccess(res.data);
+          // ✨ Автоматичне звуження типу завдяки Promises. Жодних костилів.
+          if (res.success) {
+            if (onSuccess) {
+              onSuccess(res.data);
+            }
+          } else {
+            setErrorMessage(res.error || "Не вдалося зберегти підручник.");
           }
-        } else {
-          setErrorMessage(
-            res.error || "Не вдалося зберегти підручник на сервері.",
-          );
+        } catch (serverErr: any) {
+          console.error(serverErr);
+          setErrorMessage("Помилка запиту до сервера.");
+        } finally {
+          setIsPending(false);
         }
       };
     } catch (err) {
-      console.error("Помилка процесу завантаження:", err);
-      setErrorMessage("Сталася критична помилка під час обробки файлу.");
-    } finally {
+      console.error(err);
+      setErrorMessage("Критична помилка обробки файлу.");
       setIsPending(false);
     }
   };
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -142,15 +141,11 @@ export default function UploadBookModal({
       aria-modal="true"
       aria-labelledby="modal-title"
     >
-      {/* М'яка напівпрозора підкладка (Overlay) */}
       <div
         className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs transition-opacity"
         onClick={onClose}
       />
-
-      {/* Головне вікно (Dialog Content) з гнучкою висотою h-auto та WCAG-переносами */}
       <div className="bg-white border-2 border-slate-200 w-full max-w-lg rounded-3xl shadow-2xl relative z-10 overflow-hidden animate-in fade-in zoom-in-95 duration-200 text-left h-auto max-h-[95vh] flex flex-col">
-        {/* Хедер вікна */}
         <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50/50 shrink-0">
           <div>
             <h3
@@ -172,22 +167,14 @@ export default function UploadBookModal({
           </button>
         </div>
 
-        {/* Тіло вікна з великою інтерактивною Drop-зоною */}
         <div className="p-6 space-y-4 overflow-y-auto flex-1">
           <div
             onDragEnter={handleDrag}
             onDragOver={handleDrag}
             onDragLeave={handleDrag}
             onDrop={handleDrop}
-            className={`w-full border-2 border-dashed rounded-2xl p-8 flex flex-col items-center justify-center text-center transition-all relative ${
-              dragActive
-                ? "border-sky-500 bg-sky-50/30 scale-[1.01]"
-                : file
-                  ? "border-emerald-500 bg-emerald-50/10"
-                  : "border-slate-300 bg-slate-50/50 hover:border-slate-400"
-            }`}
+            className={`w-full border-2 border-dashed rounded-2xl p-8 flex flex-col items-center justify-center text-center transition-all relative ${dragActive ? "border-sky-500 bg-sky-50/30 scale-[1.01]" : file ? "border-emerald-500 bg-emerald-50/10" : "border-slate-300 bg-slate-50/50 hover:border-slate-400"}`}
           >
-            {/* Прихований рідний input */}
             <input
               type="file"
               id={fileInputId}
@@ -196,7 +183,6 @@ export default function UploadBookModal({
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
               disabled={isProcessing}
             />
-
             {!file ? (
               <div className="space-y-3 pointer-events-none">
                 <div className="h-12 w-12 rounded-xl bg-white border border-slate-200 flex items-center justify-center mx-auto shadow-xs">
@@ -233,7 +219,6 @@ export default function UploadBookModal({
             )}
           </div>
 
-          {/* Інформація про успішний прорахунок унікального хешу */}
           {fileHash && !isProcessing && (
             <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl space-y-1 animate-in fade-in duration-200">
               <div className="flex items-center gap-2 text-xs font-black text-emerald-800">
@@ -251,7 +236,6 @@ export default function UploadBookModal({
             </div>
           )}
 
-          {/* Блок відображення виникнення помилок */}
           {errorMessage && (
             <div className="flex items-center gap-2.5 p-3.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs font-bold animate-in fade-in duration-200">
               <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />
@@ -262,7 +246,6 @@ export default function UploadBookModal({
           )}
         </div>
 
-        {/* Нижній блок дій зі шляхетними кнопками без фіолетового кольору */}
         <div className="p-5 border-t border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row gap-3 shrink-0">
           <button
             type="button"
