@@ -65,7 +65,42 @@ export async function getBooksBySubject(
     if (error) throw error;
     return { success: true, data: (data as BookData[]) || [] };
   } catch (error: any) {
-    console.error("Помилка в getBooksBySubject:", error.message);
+    console.error("Помилка in getBooksBySubject:", error.message);
+    return { success: false, error: error.message, data: [] };
+  }
+}
+
+/**
+ * ✨ Крок 2.5: Запит параграфів підручника з урахуванням parent_book_id (Анти-дуплікація)
+ * Завантажує структуру глав та параграфів з оригінальної книги-першоджерела.
+ */
+export async function getParagraphsByBook(bookId: string) {
+  try {
+    const supabase = await createServerConnection();
+
+    // 1. Перевіряємо, чи є у цієї книги батьківський лінк-вказівник
+    const { data: book, error: bookError } = await supabase
+      .from("books")
+      .select("id, parent_book_id")
+      .eq("id", bookId)
+      .single();
+
+    if (bookError) throw bookError;
+
+    // 2. Якщо parent_book_id існує, беремо контент оригінальної книги, інакше — поточної
+    const targetBookId = book.parent_book_id || book.id;
+
+    // 3. Стягуємо унікальні параграфи
+    const { data: paragraphs, error: contentError } = await supabase
+      .from("book_contents")
+      .select("id, chapter_title, paragraph_number, raw_text")
+      .eq("book_id", targetBookId)
+      .order("paragraph_number", { ascending: true });
+
+    if (contentError) throw contentError;
+    return { success: true, data: paragraphs || [] };
+  } catch (error: any) {
+    console.error("Помилка в getParagraphsByBook:", error.message);
     return { success: false, error: error.message, data: [] };
   }
 }
@@ -193,7 +228,7 @@ export async function createChildProfileAction(childData: {
     if (insertError) throw insertError;
     return { success: true, data: newChild };
   } catch (error: any) {
-    console.error("Помилка в createChildProfileAction:", error.message);
+    console.error("Помилка in createChildProfileAction:", error.message);
     return { success: false, error: error.message };
   }
 }

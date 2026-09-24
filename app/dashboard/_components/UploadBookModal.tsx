@@ -9,7 +9,6 @@ import {
   Loader2,
 } from "lucide-react";
 import { calculateFileSHA256 } from "@/app/utils/crypto";
-import { checkAndRegisterBook } from "@/app/dashboard/actions";
 
 interface UploadBookModalProps {
   isOpen: boolean;
@@ -40,6 +39,7 @@ export default function UploadBookModal({
   const [isProcessing, setIsPending] = useState(false);
   const [fileHash, setFileHash] = useState<string>("");
   const [errorMessage, setErrorMessage] = useState<string>("");
+  const [loadingStage, setLoadingStage] = useState<string>("");
 
   const fileInputId = useId();
 
@@ -85,55 +85,64 @@ export default function UploadBookModal({
     }
   };
 
+  // 🔄 НАШ ГОЛОВНИЙ АСИНХРОННИЙ КОНТУР ЗБЕРЕЖЕННЯ В SUPABASE
   const handleTriggerHashing = async () => {
     if (!file) return;
     setIsPending(true);
     setErrorMessage("");
     setFileHash("");
+    setLoadingStage("Завантаження підручника у хмару LlamaCloud...");
 
     try {
       const computedHash = await calculateFileSHA256(file);
       setFileHash(computedHash);
 
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
+      const dataPayload = new FormData();
+      dataPayload.append("file", file);
+      dataPayload.append("subjectId", subjectId);
+      dataPayload.append("schoolClass", String(schoolClass));
+      dataPayload.append("fileHash", computedHash);
+      if (programId) {
+        dataPayload.append("programId", programId);
+      }
 
-      reader.onloadend = async () => {
-        try {
-          const base64Result = reader.result as string;
-          const cleanBase64 = base64Result.split(",")[1];
+      console.log(
+        "🚀 Надсилання бінарного пакету на API-роут /dashboard/upload...",
+      );
 
-          const res = await checkAndRegisterBook({
-            fileHash: computedHash,
-            subjectId: subjectId,
-            schoolClass: schoolClass,
-            programId: programId,
-            fileName: file.name,
-            fileBase64: cleanBase64,
-          });
+      // 1. Швидкий запуск таску на сервері (займає 5-10 секунд, без таймаутів!)
+      const response = await fetch("/dashboard/upload", {
+        method: "POST",
+        body: dataPayload,
+      });
 
-          // ✨ Автоматичне звуження типу завдяки Promises. Жодних костилів.
-          if (res.success) {
-            if (onSuccess) {
-              onSuccess(res.data);
-            }
-          } else {
-            setErrorMessage(res.error || "Не вдалося зберегти підручник.");
-          }
-        } catch (serverErr: any) {
-          console.error(serverErr);
-          setErrorMessage("Помилка запиту до сервера.");
-        } finally {
-          setIsPending(false);
+      if (!response.ok) {
+        const errJson = await response.json().catch(() => ({}));
+        throw new Error(errJson.error || `Помилка сервера: ${response.status}`);
+      }
+
+      const res = await response.json();
+
+      // ✨ Якщо сервер відразу повернув готовий об'єкт книги (спрацював наш надійний Fallback), завершуємо!
+      if (res.success && res.data) {
+        console.log(
+          "✅ Книгу успішно додано в Supabase через серверний контур!",
+        );
+        if (onSuccess) {
+          onSuccess(res.data);
         }
-      };
-    } catch (err) {
-      console.error(err);
-      setErrorMessage("Критична помилка обробки файлу.");
+        return;
+      }
+
+      throw new Error(res.error || "Не вдалося зберегти підручник.");
+    } catch (serverErr: any) {
+      console.error("Помилка завантаження підручника:", serverErr);
+      setErrorMessage(serverErr.message || "Помилка запиту до сервера.");
+    } finally {
       setIsPending(false);
+      setLoadingStage("");
     }
   };
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -150,17 +159,17 @@ export default function UploadBookModal({
           <div>
             <h3
               id="modal-title"
-              className="font-black text-base text-slate-900 tracking-tight break-words whitespace-normal"
+              className="font-black text-base text-slate-900 tracking-tight break-words"
             >
               ➕ Додати новий підручник
             </h3>
-            <p className="text-[10px] font-bold text-slate-400 mt-0.5 uppercase tracking-wider break-words whitespace-normal">
+            <p className="text-[10px] font-bold text-slate-400 mt-0.5 uppercase tracking-wider">
               {subjectName} • {schoolClass} Клас
             </p>
           </div>
           <button
             onClick={onClose}
-            className="h-8 w-8 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-slate-400 hover:text-slate-600 transition active:scale-95 cursor-pointer focus-visible:outline-none"
+            className="h-8 w-8 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-slate-400 hover:text-slate-600 transition active:scale-95 cursor-pointer"
             aria-label="Закрити вікно"
           >
             <X className="h-4 w-4" />
@@ -173,7 +182,7 @@ export default function UploadBookModal({
             onDragOver={handleDrag}
             onDragLeave={handleDrag}
             onDrop={handleDrop}
-            className={`w-full border-2 border-dashed rounded-2xl p-8 flex flex-col items-center justify-center text-center transition-all relative ${dragActive ? "border-sky-500 bg-sky-50/30 scale-[1.01]" : file ? "border-emerald-500 bg-emerald-50/10" : "border-slate-300 bg-slate-50/50 hover:border-slate-400"}`}
+            className={`w-full border-2 border-dashed rounded-2xl p-8 flex flex-col items-center justify-center text-center transition-all relative ${dragActive ? "border-sky-500 bg-sky-50/30 scale-[1.01]" : file ? "border-emerald-500 bg-emerald-50/10" : "border-slate-300 bg-slate-50/50"}`}
           >
             <input
               type="file"
@@ -189,20 +198,17 @@ export default function UploadBookModal({
                   <UploadCloud className="h-6 w-6 text-slate-400" />
                 </div>
                 <div>
-                  <p className="text-xs font-black text-slate-700 break-words whitespace-normal">
+                  <p className="text-xs font-black text-slate-700">
                     Перетягніть PDF-підручник сюди або{" "}
                     <span className="text-sky-700 underline">
                       оберіть на комп'ютері
                     </span>
                   </p>
-                  <p className="text-[10px] font-bold text-slate-400 mt-1">
-                    Максимальний розмір файлу: 45 МБ
-                  </p>
                 </div>
               </div>
             ) : (
               <div className="space-y-3 pointer-events-none animate-in fade-in zoom-in-95">
-                <div className="h-12 w-12 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center mx-auto shadow-xs">
+                <div className="h-12 w-12 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center mx-auto">
                   <span className="text-emerald-600 text-xs font-black">
                     PDF
                   </span>
@@ -227,12 +233,16 @@ export default function UploadBookModal({
                   Цифровий відбиток згенеровано! Книга готова до перевірки.
                 </span>
               </div>
-              <p
-                className="text-[10px] font-mono bg-white/70 p-2 rounded border border-emerald-100 truncate select-all text-slate-600"
-                title={fileHash}
-              >
+              <p className="text-[10px] font-mono bg-white/70 p-2 rounded border border-emerald-100 truncate select-all text-slate-600">
                 SHA-256: {fileHash}
               </p>
+            </div>
+          )}
+
+          {isProcessing && loadingStage && (
+            <div className="p-3.5 bg-sky-50 border border-sky-200 rounded-xl space-y-2 animate-in fade-in duration-200 text-sky-900 text-xs font-bold flex items-center gap-2.5">
+              <Loader2 className="h-4 w-4 animate-spin text-sky-600 shrink-0" />
+              <span>{loadingStage}</span>
             </div>
           )}
 
@@ -251,7 +261,7 @@ export default function UploadBookModal({
             type="button"
             onClick={onClose}
             disabled={isProcessing}
-            className="w-full sm:w-1/3 py-3 border-2 border-slate-200 hover:border-slate-300 text-slate-700 bg-white font-black text-xs uppercase tracking-wider rounded-xl transition cursor-pointer text-center active:scale-[0.98] disabled:opacity-50"
+            className="w-full sm:w-1/3 py-3 border-2 border-slate-200 text-slate-700 bg-white font-black text-xs uppercase tracking-wider rounded-xl transition cursor-pointer text-center"
           >
             Скасувати
           </button>
@@ -259,12 +269,12 @@ export default function UploadBookModal({
             type="button"
             onClick={handleTriggerHashing}
             disabled={!file || isProcessing}
-            className="w-full sm:w-2/3 py-3 bg-emerald-700 hover:bg-emerald-800 text-white font-black text-xs uppercase tracking-wider rounded-xl shadow-xs transition cursor-pointer text-center flex items-center justify-center gap-2 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed"
+            className="w-full sm:w-2/3 py-3 bg-emerald-700 hover:bg-emerald-800 text-white font-black text-xs uppercase tracking-wider rounded-xl shadow-xs transition flex items-center justify-center gap-2"
           >
             {isProcessing ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
-                <span>Обчислюємо відбиток...</span>
+                <span>Обробка ШІ...</span>
               </>
             ) : fileHash ? (
               <span>Перевірити повторно</span>
