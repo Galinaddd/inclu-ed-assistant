@@ -1,5 +1,6 @@
 import { SupabaseClient } from "@supabase/supabase-js";
-import { parseNewBookWithAI } from "../r2/parser-helper";
+import { parseTextWithLlama } from "../r2/llama-parser"; // Очищений технічний рукав
+import { runBookStructuringPipeline } from "../ai/structuring-service"; // Новий ШІ-сервіс валідації
 import { generateSourceKey } from "../r2/naming";
 
 export interface BookData {
@@ -16,7 +17,8 @@ export interface BookData {
 
 /**
  * 🏛️ ЧИСТА СЕРВЕРНА ЛОГІКА БАЗИ ДАНИХ (Supabase-сервіс)
- * Крос-програмна та крос-предметна дедуплікація підручників через механізм parent_book_id.
+ * Крос-програмна та крос-предметна дедуплікація підручників через механізм parent_book_id
+ * із вбудованим автоматичним ШІ-фільтром крос-валідації предмета і класу (Захист від сміття).
  */
 export async function executeBookRegistrationPipeline(
   supabase: SupabaseClient,
@@ -29,8 +31,8 @@ export async function executeBookRegistrationPipeline(
     fileBase64: string;
   },
 ) {
-  // 1. Шукаємо першоджерельну книгу за хешем у всій системі
-  // Сортування за created_at гарантує, що ми завжди візьмемо саму першу (оригінальну) книгу в Україні
+  // 1. Шукаємо першоджерельну книгу за хешем у всій системі (Глобальний пошук по Україні)
+  // Сортування за created_at гарантує, що ми завжди візьмемо саму першу (оригінальну) книгу
   const { data: globalExistingBook, error: searchError } = await supabase
     .from("books")
     .select(
@@ -67,7 +69,7 @@ export async function executeBookRegistrationPipeline(
     }
 
     // ✨ СЦЕНАРІЙ Б: Книга є в системі, але завантажується для ІНШОЇ програми або для ІНШОГО предмета!
-    // Створюємо новий легкий рядок-вказівник у таблиці `books`
+    // Створюємо новий легкий рядок-вказівник у таблиці `books` (Дедуплікація програм НУШ)
     const { data: clonedBook, error: cloneError } = await supabase
       .from("books")
       .insert({
@@ -92,14 +94,31 @@ export async function executeBookRegistrationPipeline(
     return { isDuplicate: true, data: clonedBook as BookData };
   }
 
-  // ✨ СЦЕНАРІЙ В: Книга абсолютно нова для всієї платформи. Запускаємо бойовий ШІ-парсинг.
-  const aiParsedResult = await parseNewBookWithAI(
-    params.fileHash,
+  // ✨ СЦЕНАРІЙ В: Книга абсолютно нова для всієї платформи. Запускаємо декомпозирований конвеєр.
+
+  // Крок А: Викликаємо вистраданий технічний рукав Лами для отримання сухого тексту книги
+  const rawMarkdown = await parseTextWithLlama(
     params.fileBase64,
     params.fileName,
   );
 
-  // Створюємо головну оригінальну картку книги (вона стає першоджерелом, parent_book_id = null)
+  // Отримуємо реальну назву предмета з бази даних для перехресної ШІ-перевірки
+  const { data: currentSubject } = await supabase
+    .from("program_subjects")
+    .select("subject_name")
+    .eq("id", params.subjectId)
+    .single();
+  const expectedSubjectName =
+    currentSubject?.subject_name || "Невідомий предмет";
+
+  // Крок Б: Передаємо Markdown в ШІ-структуризатор для збирання глав та залізного захисту від сміття
+  const aiParsedResult = await runBookStructuringPipeline(
+    rawMarkdown,
+    params.schoolClass,
+    expectedSubjectName,
+  );
+
+  // Крок В: Створюємо головну оригінальну картку книги (вона стає першоджерелом, parent_book_id = null)
   const { data: newBook, error: insertError } = await supabase
     .from("books")
     .insert({
@@ -122,7 +141,7 @@ export async function executeBookRegistrationPipeline(
 
   if (insertError) throw insertError;
 
-  // Записуємо параграфи оригінальної книги в єдиному екземплярі
+  // Крок Г: Записуємо параграфи оригінальної книги в єдиному екземплярі
   if (aiParsedResult.chapters && aiParsedResult.chapters.length > 0) {
     const contentRows: any[] = [];
 

@@ -1,18 +1,10 @@
-import { OpenAI } from "openai";
+// 📂 Шлях до файлу: utils/r2/llama-parser.ts
 import LlamaCloud from "@llamaindex/llama-cloud"; // Наш дефолтний імпорт
 
-interface ParsedBookResult {
-  title: string;
-  publisher: string;
-  publishing_year: number;
-  chapters: { title: string; paragraphs: string[] }[];
-}
-
-export async function parseNewBookWithAI(
-  fileHash: string,
+export async function parseTextWithLlama(
   fileBase64: string,
   fileName: string,
-): Promise<ParsedBookResult> {
+): Promise<string> {
   console.log("\n=======================================================");
   console.log("🚀 [КРОК 1] ЗАПУСК ОПТИМІЗОВАНОГО КЛІЄНТА LLAMACLOUD v2 API");
   console.log(`Файл: ${fileName}`);
@@ -76,52 +68,7 @@ export async function parseNewBookWithAI(
       `✅ [ETAП 3] Книгу успішно оцифровано! Отримано символів: ${extractedMarkdown.length}`,
     );
 
-    // 🤖 ЕТАП 4: Передача розпізнаного тексту в OpenAI для структурування під базу даних
-    console.log(
-      "⏳ [КРОК 4] Ініціалізація структурування JSON через OpenAI GPT-4o...",
-    );
-    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    const safeTextSample = extractedMarkdown.substring(0, 45000);
-
-    const structuringResponse = await openai.chat.completions.create({
-      model: "gpt-4o",
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "system",
-          content: `Ти — системний девелопер та архітектор даних. Твоє завдання — структурувати розпізнаний текст підручника у валідний JSON-об'єкт.
-{
-  "title": "Офіційна назва підручника",
-  "publisher": "Назва видавництва або Глобальний каталог IncluEd",
-  "publishing_year": 2024,
-  "chapters": [
-    {
-      "title": "Повна назва глави або розділу підручника",
-      "paragraphs": ["1.1", "1.2", "1.3"]
-    }
-  ]
-}`,
-        },
-        {
-          role: "user",
-          content: `Ось розпізнаний текст книги: \n\n${safeTextSample}`,
-        },
-      ],
-      temperature: 0.1,
-    });
-
-    console.log("✅ [КРОК 4] OpenAI успішно сформував відповідь.");
-
-    // Наша залізобетонна типізація choices без багів синтаксису
-    const finalJsonString =
-      structuringResponse.choices?.[0]?.message?.content || "{}";
-
-    console.log("=======================================================");
-    console.log("🎯 [ФІНАЛЬНИЙ РЕЗУЛЬТАТ ШІ] Структура під базу даних:");
-    console.log(finalJsonString);
-    console.log("=======================================================");
-
-    return JSON.parse(finalJsonString) as ParsedBookResult;
+    return extractedMarkdown;
   } catch (error: any) {
     console.error("\n❌❌❌ КРИТИЧНИЙ ЗБІЙ В ОФІЦІЙНОМУ SDK-ПАЙПЛАЙНІ:");
     console.error(`Повідомлення про помилку: ${error.message}`);

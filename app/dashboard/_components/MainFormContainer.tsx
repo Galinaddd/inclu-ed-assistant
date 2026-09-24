@@ -31,7 +31,6 @@ export default function MainFormContainer({
   const [activeTab, setActiveTab] = useState<ActiveTabType>("text");
   const [file, setFile] = useState<File | null>(null);
 
-  // Перемикаємо вкладку на текст, якщо з R2 прилетів оцифрований параграф
   useEffect(() => {
     if (inputText) setActiveTab("text");
   }, [inputText]);
