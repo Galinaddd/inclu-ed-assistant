@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { createServerConnection } from "@/app/utils/supabase/server"; // ✨ Підключення до БД
 import { generateSystemPrompt } from "./prompt-templates";
 
 const openai = new OpenAI({
@@ -14,30 +15,49 @@ export interface AdaptationServiceResult {
 export async function runTextAdaptationPipeline(params: {
   userId: string;
   text: string;
-  childId: string;
   userRole: "teacher" | "family";
   subjectName: string;
+  // ✨ ПЕРЕДАЄМО ГОТОВІ ДАНІ З КЛІЄНТА (Економія на запитах до профілю)
+  clientChildData: {
+    id: string;
+    child_name: string;
+    school_class: number;
+    support_level: number;
+    child_age: number;
+    diagnosis_code: string;
+    diagnosis_title: string;
+  };
 }): Promise<AdaptationServiceResult> {
   if (!process.env.OPENAI_API_KEY) {
     throw new Error("OPENAI_API_KEY відсутній у .env.local");
   }
 
-  // 1. Еталонні параметри профілю дитини (Тимчасова заглушка з бази)
-  const mockChild = {
-    childName: "Максимко",
-    diagnosisTitle: "Rozlady avtystychnoho spektra (RAS)",
-    aiInstructions:
-      "Формуй жорстку покрокову інструкцію, уникай абстрактних метафор, алегорій та двозначностей. Спрощуй складні речення на короткі тези. Додавай інтерактивні чек-бокси [ ].",
-    supportLevel: 3,
-    schoolClass: 3, // Математика 1-4 класів для мами піде через дешеву модель!
-    childAge: 8,
-  };
+  // Розпаковуємо чисті дані дитини, які прилетіли з клієнта за 0 мілісекунд
+  const {
+    id: childId,
+    child_name,
+    school_class,
+    support_level,
+    child_age,
+    diagnosis_title,
+    diagnosis_code,
+  } = params.clientChildData;
+
+  // 🛡️ БЕЗПЕКА СЕРВЕРА: Зчитуємо тільки важку системну інструкцію ШІ з довідника ref_diagnoses
+  const supabase = await createServerConnection();
+  const { data: diagnosisData } = await supabase
+    .from("ref_diagnoses")
+    .select("ai_instructions")
+    .eq("code", diagnosis_code)
+    .single();
+
+  const aiInstructions =
+    diagnosisData?.ai_instructions ||
+    "Стандартна адаптація тексту відповідно до віку дитини.";
 
   // =================================================================
-  // 🧠 ✨ АВТОМАТИЧНИЙ РОЗУМНИЙ ПЕРЕМИКАЧ МОДЕЛЕЙ (ЕКОНОМІЯ БЮДЖЕТУ)
+  // 🧠 ✨ АВТОМАТИЧНИЙ РОЗУМНИЙ ПЕРЕМИКАЧ МОДЕЛЕЙ (МАКСИМАЛЬНА ЕКОНОМІЯ)
   // =================================================================
-
-  // Перелік складних STEM-предметів СТАРШОЇ школи (без початкової математики)
   const seniorExactSciences = [
     "алгебра",
     "геометрія",
@@ -55,7 +75,7 @@ export async function runTextAdaptationPipeline(params: {
   // Перевіряємо, чи це математика, але вже СТАРШИХ класів (від 5-го і вище)
   const isAdvancedMath =
     params.subjectName.toLowerCase().trim().includes("математика") &&
-    mockChild.schoolClass > 4;
+    school_class > 4;
 
   // Залізне правило вибору «мозку» для генерації
   const modelToUse =
@@ -66,19 +86,19 @@ export async function runTextAdaptationPipeline(params: {
       : "gpt-4o-mini"; // 1-4 клас для мами (включаючи Математику) йде через дешеву модель!
 
   console.log(
-    `[ШІ-Диспетчер] Визначено модель для генерації: ${modelToUse} (Предмет: ${params.subjectName}, Клас: ${mockChild.schoolClass}, Роль: ${params.userRole})`,
+    `[ШІ-Диспетчер] Жива адаптація для: ${child_name} (Клас: ${school_class}, Код Діагнозу: ${diagnosis_code}). Модель: ${modelToUse}`,
   );
 
   // =================================================================
 
   // 2. Розділяємо логіку на Системний закон та Вхідні дані користувача
   const systemPrompt = generateSystemPrompt({
-    childName: mockChild.childName,
-    diagnosisTitle: mockChild.diagnosisTitle,
-    aiInstructions: mockChild.aiInstructions,
-    supportLevel: mockChild.supportLevel,
-    schoolClass: mockChild.schoolClass,
-    childAge: mockChild.childAge,
+    childName: child_name,
+    diagnosisTitle: diagnosis_title,
+    aiInstructions: aiInstructions,
+    supportLevel: support_level,
+    schoolClass: school_class,
+    childAge: child_age,
     userRole: params.userRole,
     subjectName: params.subjectName,
   });
@@ -90,7 +110,7 @@ export async function runTextAdaptationPipeline(params: {
       { role: "system", content: systemPrompt },
       {
         role: "user",
-        content: `ОРИГІНАЛЬНИЙ ТЕКСТ ПАРАГРАФА ДЛЯ АДАПТАЦІЇ:\n\"\"\"\n${params.text}\n\"\"flip"`,
+        content: `ОРИГІНАЛЬНИЙ ТЕКСТ ПАРАГРАФА ДЛЯ АДАПТАЦІЇ:\n\"\"\"\n${params.text}\n\"\"\"`,
       },
     ],
     temperature: 0.15, // Заземлюємо ШІ, щоб не вигадував дурниць
@@ -106,7 +126,7 @@ export async function runTextAdaptationPipeline(params: {
 
   // 5. Формуємо персональний ключ для Cloudflare R2
   const adaptationUuid = crypto.randomUUID();
-  const r2Key = `personal-materials/${params.userId}/${params.childId}/${adaptationUuid}.txt`;
+  const r2Key = `personal-materials/${params.userId}/${childId}/${adaptationUuid}.txt`;
 
   return { aiText, autoTitle, r2Key };
 }

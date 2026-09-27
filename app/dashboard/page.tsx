@@ -25,8 +25,10 @@ interface ChildProfile {
   school_class: number | null;
   program_id: string | null;
   ref_diagnoses?: {
+    // ✨ Вчимо клієнт бачити і code, і title
+    code: string;
     title: string;
-  };
+  } | null;
 }
 
 interface SubjectData {
@@ -81,6 +83,7 @@ export default function DashboardPage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isPending, startTransition] = useTransition();
   const [isUploadOpen, setIsUploadOpen] = useState(false);
+  const [userRole, setUserRole] = useState<"teacher" | "family">("family");
 
   // 1. Дебаг профілю користувача
   useEffect(() => {
@@ -95,12 +98,16 @@ export default function DashboardPage() {
           .eq("id", user.id)
           .maybeSingle();
         console.log("=== ЧИСТИЙ ДЕБАГ ДАШБОРДУ В БРАУЗЕРІ ===", profile);
+        if (profile?.role) {
+          setUserRole(profile.role as "teacher" | "family"); // ✨ Зберігаємо роль у пам'ять
+        }
       }
     };
     debugDatabase();
   }, [supabase]);
 
   // 2. Завантаження карток дітей
+  // ✨ ОНОВЛЕНИЙ БЛОК ЗАВАНТАЖЕННЯ ДІТЕЙ У app/dashboard/page.tsx
   useEffect(() => {
     const fetchChildrenData = async () => {
       try {
@@ -109,9 +116,10 @@ export default function DashboardPage() {
         } = await supabase.auth.getSession();
         if (!session?.user) return;
 
+        // Підтягуємо і code, і title з ref_diagnoses за один реляційний запит
         const { data, error } = await supabase
           .from("children_profiles")
-          .select("*, ref_diagnoses(title)")
+          .select("*, ref_diagnoses(code, title)")
           .eq("user_id", session.user.id)
           .order("created_at", { ascending: false });
 
@@ -219,8 +227,9 @@ export default function DashboardPage() {
   }, [activeParagraph]);
 
   // ✨ 7. ГОЛОВНА БОЙОВА ФУНКЦІЯ ШІ-ОБРОБКИ ДЛЯ ФОРМИ
+  // ✨ ОНОВЛЕНА ФУНКЦІЯ SUBMIT У app/dashboard/page.tsx
   const handleFormSubmit = async (formData: { text: string; tab: string }) => {
-    if (!activeChild || !activeSubject) return;
+    if (!activeChild) return;
 
     setIsGenerating(true);
     setAiErrorMessage(null);
@@ -228,11 +237,27 @@ export default function DashboardPage() {
 
     startTransition(async () => {
       try {
+        // Безпечно витягуємо дані реляційного об'єкта
+        const refDiag = activeChild.ref_diagnoses;
+
         const result = await adaptMaterialAction({
           text: formData.tab === "text" ? formData.text : `[Файл завантажено]`,
-          childId: activeChild.id,
-          userRole: "teacher",
-          subjectName: activeSubject.subject_name,
+          userId: activeChild.user_id,
+          userRole: userRole, // ✨ Передаємо динамічну роль з пам'яті за 0 мілісекунд!
+
+          subjectName: activeSubject
+            ? activeSubject.subject_name
+            : "Предмет не вказано",
+          // ✨ ПЕРЕДАЄМО ГОТОВІ ДАНІ З КЛІЄНТА НА СЕРВЕР ЗА 0 МІЛІСЕКУНД
+          clientChildData: {
+            id: activeChild.id,
+            child_name: activeChild.child_name,
+            school_class: activeChild.school_class || 1,
+            support_level: activeChild.support_level || 1,
+            child_age: activeChild.child_age || 7,
+            diagnosis_code: refDiag?.code || "NONE",
+            diagnosis_title: refDiag?.title || "Без особливих освітніх потреб",
+          },
         });
 
         if (result.success && result.data) {
@@ -249,6 +274,7 @@ export default function DashboardPage() {
       }
     });
   };
+
   return (
     <div className="bg-background font-sans text-foreground flex flex-col justify-between min-h-[calc(100vh-88px)]">
       <main className="max-w-6xl mx-auto px-4 md:px-6 py-4 flex-grow w-full grid grid-cols-1 lg:grid-cols-12 gap-6 relative z-10">

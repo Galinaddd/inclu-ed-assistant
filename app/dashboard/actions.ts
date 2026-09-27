@@ -11,9 +11,19 @@ import {
 
 interface AdaptTextParams {
   text: string;
-  childId: string;
+  userId: string;
   userRole: "teacher" | "family";
   subjectName: string;
+  clientChildData: {
+    // ✨ Додаємо жорстку типізацію під наш швидкий флоу
+    id: string;
+    child_name: string;
+    school_class: number;
+    support_level: number;
+    child_age: number;
+    diagnosis_code: string;
+    diagnosis_title: string;
+  };
 }
 
 // ✨ Жорстка типізація повернення екшену для лікування фронтенду без костилів
@@ -125,7 +135,6 @@ export async function checkAndRegisterBook(params: {
     return { success: false, error: error.message };
   }
 }
-
 /**
  * ОПЕРАЦІЯ 5: ТОНКИЙ ДЕКЛАРАТИВНИЙ ЕКШЕН АДАПТАЦІЇ ТЕКСТУ
  */
@@ -135,34 +144,40 @@ export async function adaptMaterialAction(params: AdaptTextParams) {
     const {
       data: { session },
     } = await supabase.auth.getSession();
-    const userId = session?.user?.id || "anonymous_user_id";
+    const currentUserId = session?.user?.id || params.userId;
 
+    // Перевірка кредитів на балансі профілю користувача
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
       .select("ai_credits_left")
-      .eq("id", userId)
+      .eq("id", currentUserId)
       .single();
 
     if (profileError) throw profileError;
     if (!profile || profile.ai_credits_left <= 0) {
-      throw new Error("Недостатньо кредитів для генерації.");
+      throw new Error(
+        "Недостатньо кредитів для генерації. Будь ласка, оновіть баланс.",
+      );
     }
 
+    // Виклик декомпонованого ШІ-пайплайну, куди летять готові клієнтські дані
     const { aiText, autoTitle, r2Key } = await runTextAdaptationPipeline({
-      userId,
+      userId: currentUserId,
       text: params.text,
-      childId: params.childId,
       userRole: params.userRole,
       subjectName: params.subjectName,
+      clientChildData: params.clientChildData,
     });
 
+    // Завантажуємо результат адаптації в Cloudflare R2
     await uploadTextToR2(r2Key, aiText);
 
+    // Записуємо факт адаптації в історію
     const { error: dbError } = await supabase
       .from("history_adaptations")
       .insert({
-        user_id: userId,
-        child_id: params.childId || null,
+        user_id: currentUserId,
+        child_id: params.clientChildData.id,
         book_id: null,
         paragraph_number: null,
         title: autoTitle,
@@ -171,10 +186,11 @@ export async function adaptMaterialAction(params: AdaptTextParams) {
 
     if (dbError) throw dbError;
 
+    // Списуємо 1 ШІ-кредит за успішну генерацію
     await supabase
       .from("profiles")
       .update({ ai_credits_left: profile.ai_credits_left - 1 })
-      .eq("id", userId);
+      .eq("id", currentUserId);
 
     return { success: true, data: aiText };
   } catch (error: any) {
