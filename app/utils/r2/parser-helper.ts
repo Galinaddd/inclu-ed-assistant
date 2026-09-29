@@ -1,96 +1,59 @@
 // 📂 Шлях до файлу: app/utils/r2/parser-helper.ts
-import LlamaCloud from "@llamaindex/llama-cloud";
+import { parseTextWithLlama } from "./llama-parser";
 
-interface ParsedBookResult {
+export interface ChapterData {
+  title: string;
+  paragraph_number: string;
+  paragraphs: string[];
+}
+
+export interface ParsedBookResult {
   title: string;
   publisher: string | null;
   publishing_year: number | null;
-  chapters: Array<{
-    title: string;
-    paragraph_number: string;
-    paragraphs: string[];
-  }>;
+  chapters: ChapterData[];
+  fullMarkdown: string;
 }
 
 /**
- * 🧠 ОРИГІНАЛЬНЕ МОНОЛІТНЕ ШІ-ЯДРО (ПОТОКОВИЙ КОНТУР SUCCESS)
- * Конвертує бінарний потік у нативний об'єкт File, який LlamaCloud розпізнає без помилок 415.
+ * 🧠 ОРКЕСТРАТОР ОЦИФРУВАННЯ ТА СТРУКТУРУВАННЯ ПІДРУЧНИКІВ
+ * Підтримує як пряме оцифрування, так і роботу з уже готовим текстом на Етапі 2.
  */
 export async function parseNewBookWithAI(
   fileHash: string,
   fileBase64: string,
+  fileName: string = "book.pdf",
+  alreadyExtractedMarkdown?: string, // ✨ Опціональний готовий текст для Етапу 2
 ): Promise<ParsedBookResult> {
   console.log("\n=======================================================");
-  console.log("🚀 [ЯДРО] ЗАПУСК ОРИГІНАЛЬНОГО ПОТОКОВОГО ПАРСЕРА");
+  console.log("🚀 [ЯДРО] ЗАПУСК ОПТИМІЗОВАНОГО ОРКЕСТРАТОРА ПАРСИНГУ");
   console.log("=======================================================");
 
   try {
-    // Відновлюємо чистий бінарний буфер з потоку
-    const fileBuffer = Buffer.from(fileBase64, "base64");
-
-    // Створюємо сумісний потоковий File об'єкт для офіційного SDK Лами
-    const binaryFile = new File([fileBuffer], "book.pdf", {
-      type: "application/pdf",
-    });
-
-    console.log("⏳ [ЛАМА] Ініціалізація клієнта LlamaCloud...");
-    const llamaClient = new LlamaCloud({
-      apiKey: process.env.LLAMA_CLOUD_API_KEY,
-    });
-
-    console.log("⏳ [ЛАМА] Передача потоку через офіційний files.create...");
-    const fileResponse = await llamaClient.files.create({
-      file: binaryFile,
-      purpose: "parse",
-    });
-
-    const fileId = fileResponse.id;
-    console.log(`✅ [ЛАМА] Потік успішно прийнято! File ID: ${fileId}`);
-
-    console.log("⏳ [ЛАМА] Очікування Agentic-аналізу та Polling статусів...");
-    const parseResult = await llamaClient.parsing.parse({
-      file_id: fileId,
-      tier: "agentic",
-      version: "latest",
-      expand: ["markdown"],
-    });
-
-    // Всеїдний збір контенту з усіх можливих полів відповіді Лами
+    // 1. Визначаємо джерело тексту: або беремо готовий з Етапу 2, або смикаємо Ламу заново
     let extractedMarkdown = "";
-    if (
-      parseResult.markdown &&
-      parseResult.markdown.pages &&
-      parseResult.markdown.pages.length > 0
-    ) {
-      extractedMarkdown = parseResult.markdown.pages
-        .map((page: any) => page.markdown || "")
-        .join("\n");
-    } else if (
-      (parseResult as any).pages &&
-      (parseResult as any).pages.length > 0
-    ) {
-      extractedMarkdown = (parseResult as any).pages
-        .map((page: any) => page.markdown || page.text || "")
-        .join("\n");
-    } else if ((parseResult as any).text) {
-      extractedMarkdown = (parseResult as any).text;
+
+    if (alreadyExtractedMarkdown) {
+      console.log(
+        "ℹ️ [ЯДРО] Текст уже отримано від Лами на попередньому кроці. Пропускаємо запит.",
+      );
+      extractedMarkdown = alreadyExtractedMarkdown;
+    } else if (fileBase64) {
+      console.log(
+        "⏳ [ЯДРО] Пряме оцифрування великого файлу через LlamaParse...",
+      );
+      extractedMarkdown = await parseTextWithLlama(fileBase64, fileName);
     }
 
     if (!extractedMarkdown || extractedMarkdown.trim().length < 10) {
-      throw new Error("LlamaCloud повернув порожній контент тексту.");
+      throw new Error(
+        "Отримано порожній або занадто короткий контент тексту підручника.",
+      );
     }
 
-    console.log(
-      `✅ [ЛАМА] Потоковий текст успішно зібрано! Символів: ${extractedMarkdown.length}`,
-    );
-
-    // БЕЗКОШТОВНИЙ КОДОВИЙ СПЛІТТЕР ПАРАГРАФІВ (Захист від OpenAI)
+    // 2. БЕЗКОШТОВНИЙ КОДОВИЙ СПЛІТТЕР ПАРАГРАФІВ
     const lines = extractedMarkdown.split("\n");
-    const generatedChapters: Array<{
-      title: string;
-      paragraph_number: string;
-      paragraphs: string[];
-    }> = [];
+    const generatedChapters: ChapterData[] = [];
 
     let paragraphCounter = 1;
     const structuralRegex = /^(#{2,3})\s+(.+)\$/;
@@ -99,7 +62,6 @@ export async function parseNewBookWithAI(
       const match = lines[i].match(structuralRegex);
       if (!match) continue;
 
-      // Безпечно очищаємо заголовки від решіток, усуваючи краш сплітера!
       const headingText = lines[i].replace(/###|##/g, "").trim();
       const lowerHeading = headingText.toLowerCase();
 
@@ -128,8 +90,10 @@ export async function parseNewBookWithAI(
       }
     }
 
-    // Подушка безпеки для атипової верстки 1 класу
     if (generatedChapters.length === 0) {
+      console.log(
+        "ℹ️ [ЯДРО] Структурних тегів не виявлено. Аварійна подушка безпеки на 20 тем...",
+      );
       for (let i = 1; i <= 20; i++) {
         const formattedNum = String(i).padStart(3, "0");
         generatedChapters.push({
@@ -140,6 +104,7 @@ export async function parseNewBookWithAI(
       }
     }
 
+    // 3. Виявлення року видання підручника
     let detectedYear = new Date().getFullYear();
     const yearMatch = extractedMarkdown
       .substring(0, 4000)
@@ -148,16 +113,23 @@ export async function parseNewBookWithAI(
       detectedYear = parseInt(yearMatch[0], 10);
     }
 
+    console.log(
+      `✅ [ЯДРО] Збирання змісту завершено. Виділено тем: ${generatedChapters.length}`,
+    );
+
     return {
       title: "Оригінальне видання НУШ",
       publisher: "Видавництво НУШ",
       publishing_year: detectedYear,
       chapters: generatedChapters,
+      fullMarkdown: extractedMarkdown,
     };
-  } catch (error: any) {
-    console.error("\n❌❌❌ КРИТИЧНИЙ ЗБІЙ В ПОТОКОВОМУ ПАЙПЛАЙНІ:");
-    console.error(error);
-    console.log("=======================================================\n");
-    throw error;
+  } catch (error) {
+    const err = error as Error;
+    console.error(
+      "\n❌❌❌ КРИТИЧНИЙ ЗБІЙ В ОРКЕСТРАТОРІ ПАРСИНГУ:",
+      err.message,
+    );
+    throw err;
   }
 }
