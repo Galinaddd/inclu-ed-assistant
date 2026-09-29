@@ -1,7 +1,6 @@
+// 📂 Шлях до файлу: utils/supabase/books.ts
 import { SupabaseClient } from "@supabase/supabase-js";
-import { parseTextWithLlama } from "../r2/llama-parser"; // Очищений технічний рукав
-import { runBookStructuringPipeline } from "../ai/structuring-service"; // Новий ШІ-сервіс валідації
-import { generateSourceKey } from "../r2/naming";
+import { parseTextWithLlama } from "../r2/llama-parser";
 
 export interface BookData {
   id: string;
@@ -17,8 +16,7 @@ export interface BookData {
 
 /**
  * 🏛️ ЧИСТА СЕРВЕРНА ЛОГІКА БАЗИ ДАНИХ (Supabase-сервіс)
- * Крос-програмна та крос-предметна дедуплікація підручників через механізм parent_book_id
- * із вбудованим автоматичним ШІ-фільтром крос-валідації предмета і класу (Захист від сміття).
+ * Глобальна дедуплікація підручників НУШ через parent_book_id без OpenAI [1.1].
  */
 export async function executeBookRegistrationPipeline(
   supabase: SupabaseClient,
@@ -31,8 +29,7 @@ export async function executeBookRegistrationPipeline(
     fileBase64: string;
   },
 ) {
-  // 1. Шукаємо першоджерельну книгу за хешем у всій системі (Глобальний пошук по Україні)
-  // Сортування за created_at гарантує, що ми завжди візьмемо саму першу (оригінальну) книгу
+  // Пошук існуючої книги за хешем та обробка сценаріїв дуплікації (точний збіг або нова програма НУШ) [1.1]
   const { data: globalExistingBook, error: searchError } = await supabase
     .from("books")
     .select(
@@ -46,11 +43,8 @@ export async function executeBookRegistrationPipeline(
   if (searchError) throw searchError;
 
   if (globalExistingBook) {
-    // Визначаємо справжній root-ID оригінальної книги (якщо знайдена книга сама є клоном)
     const trueParentId =
       globalExistingBook.parent_book_id || globalExistingBook.id;
-
-    // ✨ СЦЕНАРІЙ А: Перевіряємо, чи ця книга ВЖЕ була прив'язана до цього конкретного предмета і програми раніше
     const { data: exactSubjectClone, error: cloneCheckError } = await supabase
       .from("books")
       .select(
@@ -58,18 +52,14 @@ export async function executeBookRegistrationPipeline(
       )
       .eq("file_hash", params.fileHash)
       .eq("program_id", params.programId)
-      .eq("subject_id", params.subjectId) // Строга ізоляція в межах предметної сітки дашборду
+      .eq("subject_id", params.subjectId)
       .maybeSingle();
 
     if (cloneCheckError) throw cloneCheckError;
-
-    // Якщо точний збіг по предмету та програмі знайдено — миттєво повертаємо його без створення нових рядків
     if (exactSubjectClone) {
       return { isDuplicate: true, data: exactSubjectClone as BookData };
     }
 
-    // ✨ СЦЕНАРІЙ Б: Книга є в системі, але завантажується для ІНШОЇ програми або для ІНШОГО предмета!
-    // Створюємо новий легкий рядок-вказівник у таблиці `books` (Дедуплікація програм НУШ)
     const { data: clonedBook, error: cloneError } = await supabase
       .from("books")
       .insert({
@@ -80,7 +70,7 @@ export async function executeBookRegistrationPipeline(
         school_class: params.schoolClass,
         program_id: params.programId,
         file_hash: params.fileHash,
-        parent_book_id: trueParentId, // 🔗 Пряме лінкування на оригінал з контентом
+        parent_book_id: trueParentId,
       })
       .select(
         "id, title, publisher, publishing_year, program_id, subject_id, parent_book_id",
@@ -88,46 +78,31 @@ export async function executeBookRegistrationPipeline(
       .single();
 
     if (cloneError) throw cloneError;
-
-    // 🛑 ТАБЛИЦЮ book_contents БІЛЬШЕ НЕ ЧІПАЄМО — ЖОДНОГО ДУБЛЮВАННЯ РЯДКІВ КОНТЕНТУ!
-
     return { isDuplicate: true, data: clonedBook as BookData };
   }
 
-  // ✨ СЦЕНАРІЙ В: Книга абсолютно нова для всієї платформи. Запускаємо декомпозирований конвеєр.
-
-  // Крок А: Викликаємо вистраданий технічний рукав Лами для отримання сухого тексту книги
+  // Обробка нової книги через LlamaParse та вилучення метаданих [1.1]
   const rawMarkdown = await parseTextWithLlama(
     params.fileBase64,
     params.fileName,
   );
-
-  // Отримуємо реальну назву предмета з бази даних для перехресної ШІ-перевірки
-  const { data: currentSubject } = await supabase
-    .from("program_subjects")
-    .select("subject_name")
-    .eq("id", params.subjectId)
-    .single();
-  const expectedSubjectName =
-    currentSubject?.subject_name || "Невідомий предмет";
-
-  // Крок Б: Передаємо Markdown в ШІ-структуризатор для збирання глав та залізного захисту від сміття
-  const aiParsedResult = await runBookStructuringPipeline(
-    rawMarkdown,
-    params.schoolClass,
-    expectedSubjectName,
-  );
-
-  // Крок В: Створюємо головну оригінальну картку книги (вона стає першоджерелом, parent_book_id = null)
+  const cleanBookTitle = params.fileName
+    .replace(/\.[^/.]+\$/, "")
+    .replace(/[_-]/g, " ");
+  let detectedYear = new Date().getFullYear();
+  const yearMatch = rawMarkdown
+    .substring(0, 4000)
+    .match(/\b(201\d|202\d|203\d)\b/);
+  if (yearMatch) {
+    detectedYear = parseInt(yearMatch[0], 10);
+  }
+  // Створюємо головку картку оригінальної книги в базі даних Supabase
   const { data: newBook, error: insertError } = await supabase
     .from("books")
     .insert({
-      title:
-        aiParsedResult.title !== "Підручник адаптовано нейромережею"
-          ? aiParsedResult.title
-          : params.fileName.replace(".pdf", ""),
-      publisher: aiParsedResult.publisher,
-      publishing_year: aiParsedResult.publishing_year,
+      title: cleanBookTitle,
+      publisher: "Видавництво НУШ",
+      publishing_year: detectedYear,
       subject_id: params.subjectId,
       school_class: params.schoolClass,
       program_id: params.programId,
@@ -141,43 +116,105 @@ export async function executeBookRegistrationPipeline(
 
   if (insertError) throw insertError;
 
-  // Крок Г: Записуємо параграфи оригінальної книги в єдиному екземплярі
-  if (aiParsedResult.chapters && aiParsedResult.chapters.length > 0) {
-    const contentRows: any[] = [];
+  // Крок Г: НАДІЙНИЙ ОРИГІНАЛЬНИЙ СПЛІТТЕР ПАРАГРАФІВ (Працює за 0 грн)
+  const lines = rawMarkdown.split("\n");
+  const tempNodes: any[] = [];
 
-    aiParsedResult.chapters.forEach((chapter) => {
-      if (chapter.paragraphs && chapter.paragraphs.length > 0) {
-        chapter.paragraphs.forEach((paragraphNum) => {
-          const r2Key = generateSourceKey({
-            programId: params.programId || "unknown_program",
-            schoolClass: params.schoolClass,
-            subjectId: params.subjectId,
-            author: aiParsedResult.publisher || "author",
-            year: aiParsedResult.publishing_year || new Date().getFullYear(),
-            paragraphNumber: paragraphNum,
-          });
+  let currentChapterTitle = "Вступні матеріали підручника";
+  let paragraphCounter = 1;
+  let currentParagraphStartIdx = 0;
 
-          contentRows.push({
-            book_id: newBook.id, // Пишеться строго під ID оригінальної книги
-            chapter_title: chapter.title,
-            paragraph_number: paragraphNum,
-            raw_text: r2Key,
-          });
-        });
-      }
+  const structuralRegex = /^(#{2,3})\s+(.+)$/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i].match(structuralRegex);
+    if (!match) continue;
+
+    const headingText = match[0].trim();
+    const lowerHeading = headingText.toLowerCase();
+
+    const isStructure =
+      ["параграф", "§", "розділ", "глава", "тема", "додаток"].some((keyword) =>
+        lowerHeading.includes(keyword),
+      ) || /^\d+(\.\d+)*\s+/.test(headingText);
+
+    if (!isStructure) continue;
+
+    const charEndIdx = rawMarkdown.indexOf(lines[i]);
+
+    if (charEndIdx > currentParagraphStartIdx + 10) {
+      const formattedNum = String(paragraphCounter).padStart(3, "0");
+      tempNodes.push({
+        chapter_title: currentChapterTitle,
+        paragraph_number: formattedNum,
+        start: currentParagraphStartIdx,
+        end: charEndIdx,
+      });
+      paragraphCounter++;
+    }
+
+    currentChapterTitle = headingText;
+    currentParagraphStartIdx = charEndIdx;
+  }
+
+  if (rawMarkdown.length > currentParagraphStartIdx + 10) {
+    const formattedNum = String(paragraphCounter).padStart(3, "0");
+    tempNodes.push({
+      chapter_title: currentChapterTitle,
+      paragraph_number: formattedNum,
+      start: currentParagraphStartIdx,
+      end: rawMarkdown.length,
+    });
+  }
+
+  // Крок Д: ЗАВАНТАЖЕННЯ КОНТЕНТУ В CLOUDFLARE R2 ТА СИНХРОНІЗАЦІЯ З SUPABASE
+  const contentRows: any[] = [];
+  const { r2Client, R2_BUCKET_NAME } = await import("@/app/utils/r2/r2");
+  const { PutObjectCommand } = await import("@aws-sdk/client-s3");
+  const { generateSourceKey } = await import("@/app/utils/r2/naming");
+
+  for (const node of tempNodes) {
+    const paragraphMarkdownContent = rawMarkdown
+      .substring(node.start, node.end)
+      .trim();
+
+    // Використовуємо вашу дефолтну генерацію шляху:
+    const r2Key = generateSourceKey({
+      programId: params.programId || "unknown_program",
+      schoolClass: params.schoolClass,
+      subjectId: params.subjectId,
+      author: "pidruchnyk",
+      year: detectedYear,
+      paragraphNumber: node.paragraph_number,
     });
 
-    if (contentRows.length > 0) {
-      const { error: paragraphsInsertError } = await supabase
-        .from("book_contents")
-        .insert(contentRows);
+    await r2Client.send(
+      new PutObjectCommand({
+        Bucket: R2_BUCKET_NAME,
+        Key: r2Key,
+        Body: paragraphMarkdownContent,
+        ContentType: "text/markdown; charset=utf-8",
+      }),
+    );
 
-      if (paragraphsInsertError) {
-        console.error(
-          "Помилка автоматичного збереження параграфів першоджерела:",
-          paragraphsInsertError.message,
-        );
-      }
+    contentRows.push({
+      book_id: newBook.id,
+      chapter_title: node.chapter_title,
+      paragraph_number: node.paragraph_number,
+      raw_text: r2Key,
+    });
+  }
+
+  if (contentRows.length > 0) {
+    const { error: paragraphsInsertError } = await supabase
+      .from("book_contents")
+      .insert(contentRows);
+
+    if (paragraphsInsertError) {
+      console.error(
+        "⚠️ Помилка автоматичного збереження дерева параграфів:",
+        paragraphsInsertError.message,
+      );
     }
   }
 

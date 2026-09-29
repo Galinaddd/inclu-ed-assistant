@@ -4,12 +4,14 @@ import React, { useState, useEffect } from "react";
 import FormTabs, { ActiveTabType } from "./FormTabs";
 import FormContent from "./FormContent";
 import { Sparkles, Loader2 } from "lucide-react";
+import AdaptedResultTabs from "./AdaptedResultTabs"; // ✨ Імпортуємо наш преміальний тривкладковий блок
 
 interface MainFormContainerProps {
   inputText: string;
   setInputText: (text: string) => void;
   loadingTextFromR2: boolean;
   isGenerating: boolean;
+  userRole: "teacher" | "family"; // ✨ Вчимо форму приймати динамічну роль з дашборду
   onSubmit: (data: {
     tab: ActiveTabType;
     text: string;
@@ -24,6 +26,7 @@ export default function MainFormContainer({
   setInputText,
   loadingTextFromR2,
   isGenerating,
+  userRole, // ✨ Деструктуризуємо роль
   onSubmit,
   aiResponse,
   errorMessage,
@@ -76,15 +79,9 @@ export default function MainFormContainer({
         </div>
       )}
 
+      {/* ✨ ВІЗУАЛІЗАЦІЯ РЕЗУЛЬТАТУ: Замість сирого div підключаємо розумні вкладки з посадкової */}
       {aiResponse && (
-        <div className="p-5 bg-emerald-50/50 border-2 border-emerald-500/3xl rounded-2xl text-left space-y-2 animate-in fade-in duration-300">
-          <p className="text-[10px] font-black text-emerald-800 uppercase tracking-wider">
-            ✨ Адаптований інклюзивний матеріал від ШІ:
-          </p>
-          <div className="text-sm font-medium text-slate-800 whitespace-pre-wrap leading-relaxed">
-            {aiResponse}
-          </div>
-        </div>
+        <AdaptedResultTabs aiResponse={aiResponse} userRole={userRole} />
       )}
 
       <div className="pt-1 shrink-0">

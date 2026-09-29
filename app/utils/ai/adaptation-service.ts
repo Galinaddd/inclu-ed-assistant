@@ -17,6 +17,7 @@ export async function runTextAdaptationPipeline(params: {
   text: string;
   userRole: "teacher" | "family";
   subjectName: string;
+  contentType: "text" | "attachment" | "test";
   // ✨ ПЕРЕДАЄМО ГОТОВІ ДАНІ З КЛІЄНТА (Економія на запитах до профілю)
   clientChildData: {
     id: string;
@@ -101,6 +102,7 @@ export async function runTextAdaptationPipeline(params: {
     childAge: child_age,
     userRole: params.userRole,
     subjectName: params.subjectName,
+    contentType: params.contentType,
   });
 
   // 3. Запит із ТЕМПЕРАТУРОЮ 0.15 та динамічно підібраною моделлю

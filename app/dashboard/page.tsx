@@ -248,6 +248,7 @@ export default function DashboardPage() {
           subjectName: activeSubject
             ? activeSubject.subject_name
             : "Предмет не вказано",
+          contentType: formData.tab as "text" | "attachment" | "test",
           // ✨ ПЕРЕДАЄМО ГОТОВІ ДАНІ З КЛІЄНТА НА СЕРВЕР ЗА 0 МІЛІСЕКУНД
           clientChildData: {
             id: activeChild.id,
@@ -383,6 +384,7 @@ export default function DashboardPage() {
                 setInputText={setExtractedText}
                 loadingTextFromR2={loadingTextFromR2}
                 isGenerating={isGenerating}
+                userRole={userRole}
                 onSubmit={handleFormSubmit}
                 aiResponse={aiResponse}
                 errorMessage={aiErrorMessage}

@@ -1,12 +1,16 @@
 // 📂 Шлях до файлу: utils/r2/llama-parser.ts
-import LlamaCloud from "@llamaindex/llama-cloud"; // Наш дефолтний імпорт
+import LlamaCloud from "@llamaindex/llama-cloud";
 
+/**
+ * ☁️ ОФІЦІЙНИЙ СТАБІЛЬНИЙ КЛІЄНТ LLAMACLOUD API (Комміт ac1069a)
+ * Приймає Base64 рядок, перетворює його в об'єкт File і лінійно чекає Markdown.
+ */
 export async function parseTextWithLlama(
   fileBase64: string,
   fileName: string,
 ): Promise<string> {
   console.log("\n=======================================================");
-  console.log("🚀 [КРОК 1] ЗАПУСК ОПТИМІЗОВАНОГО КЛІЄНТА LLAMACLOUD v2 API");
+  console.log("🚀 [ЛАМА] ЗАПУСК ОПТИМІЗОВАНОГО КЛІЄНТА LLAMACLOUD v2 API");
   console.log(`Файл: ${fileName}`);
   console.log("=======================================================");
 
@@ -14,36 +18,33 @@ export async function parseTextWithLlama(
     // 1. Конвертуємо отриманий Base64 назад у чистий бінарний Buffer Node.js
     const fileBuffer = Buffer.from(fileBase64, "base64");
 
-    // 🌟 ЗА ДОКУМЕНТАЦІЄЮ: Створюємо нативний Node.js об'єкт File, щоб пробити помилку 422!
-    // Передаємо масив байтів буфера, ім'я файлу та суворий MIME-тип.
+    // 🌟 Створюємо нативний Node.js об'єкт File для передачі в SDK
     const binaryFile = new File([fileBuffer], fileName || "book.pdf", {
       type: "application/pdf",
     });
 
-    // 2. Ініціалізуємо офіційний клієнт
-    console.log("⏳ [КРОК 2] Ініціалізація LlamaCloud клієнта...");
+    // 2. Ініціалізуємо офіційний клієнт LlamaIndex
+    console.log("⏳ [ЛАМА] Ініціалізація LlamaCloud клієнта...");
     const llamaClient = new LlamaCloud({
       apiKey: process.env.LLAMA_CLOUD_API_KEY,
     });
 
-    // 📥 ЕТАП 1 ЗА ДОКУМЕНТАЦІЄЮ: Завантажуємо файл у хмару швидким бінарним пакетом
-    console.log("⏳ [ETAП 1] Швидке завантаження файлу через files.create...");
+    // 📥 ЕТАП 1: Завантажуємо файл у хмару швидким бінарним пакетом
+    console.log("⏳ [ЛАМА] Швидке завантаження файлу через files.create...");
     const fileResponse = await llamaClient.files.create({
-      file: binaryFile, // Передаємо нативний бінарний File, який сервер Лами залізно розпізнає!
+      file: binaryFile,
       purpose: "parse",
     });
 
     const fileId = fileResponse.id;
-    console.log(
-      `✅ [ETAП 1] Файл успішно прийнято сервером! File ID: ${fileId}`,
-    );
+    console.log(`✅ [ЛАМА] Файл успішно прийнято сервером! File ID: ${fileId}`);
 
-    // 🏗️ ЕТАП 2 ТА 3 ЗА ДОКУМЕНТАЦІЄЮ: Запускаємо преміальний Agentic парсинг
+    // 🏗️ ЕТАП 2 ТА 3: Запускаємо преміальний Agentic парсинг та Polling статусів
     console.log(
-      "⏳ [ETAП 2-3] Ініціалізація таску парсингу та автоматичний Polling статусів...",
+      "⏳ [ЛАМА] Ініціалізація таску парсингу та автоматичний Polling статусів...",
     );
     const parseResult = await llamaClient.parsing.parse({
-      file_id: fileId, // Наш суворий snake_case параметр
+      file_id: fileId,
       tier: "agentic",
       version: "latest",
       expand: ["markdown"], // Просимо відразу повернути Markdown верстку сторінок
@@ -64,8 +65,9 @@ export async function parseTextWithLlama(
     const extractedMarkdown = parseResult.markdown.pages
       .map((page: any) => page.markdown)
       .join("\n");
+
     console.log(
-      `✅ [ETAП 3] Книгу успішно оцифровано! Отримано символів: ${extractedMarkdown.length}`,
+      `✅ [ЛАМА] Книгу успішно оцифровано! Отримано символів: ${extractedMarkdown.length}`,
     );
 
     return extractedMarkdown;

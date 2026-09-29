@@ -1,13 +1,23 @@
+// 📂 Шлях до файлу: utils/r2/naming.ts
+
 /**
- * Безпечне очищення імені автора для використання в назвах папок хмари
+ * 🛠️ БЕЗПЕЧНЕ ОЧИЩЕННЯ ТЕКСТУ (SLUGIFY)
+ * Перетворює кирилицю та латиницю на безпечні технічні назви для теках у хмарі.
  */
-export function normalizeAuthorName(author: string): string {
-  return author.toLowerCase().replace(/[^a-z0-9а-яєіїґ]/g, "_");
+export function slugify(text: string): string {
+  if (!text) return "unnamed";
+  return text
+    .toLowerCase()
+    .trim()
+    .replace(/[§.№]/g, "") // Видаляємо специфічні символи
+    .replace(/[^a-z0-9а-яєіїґ]/g, "_") // Міняємо пробіли та спецсимволи на підкреслення
+    .replace(/_+/g, "_") // Запобігаємо подвійним підкресленням
+    .replace(/^_+|_+\$/g, ""); // Очищаємо хвости
 }
 
 /**
- * ГЕНЕРАТОР ШЛЯХУ ДЛЯ ОРИГІНАЛУ КНИГИ (Флоу №2)
- * Формує: source-books/[program_id]/[class]/[subject_id]/[author]_[year]/paragraph_[N].txt
+ * 📁 ГЕНЕРАТОР КЛЮЧІВ ДЛЯ ОРИГІНАЛЬНИХ ПАРАГРАФІВ (ПЕРШОДЖЕРЕЛА)
+ * Формує шлях: source-books/[program_id]/[class]/[subject_id]/[author_year]/paragraph_[num].txt
  */
 export function generateSourceKey(params: {
   programId: string;
@@ -17,17 +27,17 @@ export function generateSourceKey(params: {
   year: number;
   paragraphNumber: string;
 }): string {
-  const cleanAuthor = normalizeAuthorName(params.author);
+  const cleanAuthor = slugify(params.author);
   return `source-books/${params.programId}/${params.schoolClass}/${params.subjectId}/${cleanAuthor}_${params.year}/paragraph_${params.paragraphNumber}.txt`;
 }
 
 /**
- * ГЕНЕРАТОР ШЛЯХУ ДЛЯ ГЛОБАЛЬНОГО ШІ-АРХІВУ (Флоу №1)
- * Формує: generated-materials/[program]/[class]/[subject_id]/[author]_[year]/paragraph_[N]/level_[L]_[diagnosis].txt
+ * 📁 ГЕНЕРАТОР КЛЮЧІВ ДЛЯ АДАПТОВАНИХ ШІ-МАТЕРІАЛІВ
+ * Формує шлях: adapted-materials/[program_id]/[class]/[subject_id]/[author_year]/paragraph_[num]_level_[lvl]_[diagnosis].txt
  */
 export function generateAdaptedKey(params: {
-  programSlug: string;
-  targetSchoolClass: number;
+  programId: string;
+  schoolClass: number;
   subjectId: string;
   author: string;
   year: number;
@@ -35,13 +45,14 @@ export function generateAdaptedKey(params: {
   targetSupportLevel: number;
   targetDiagnosis: string;
 }): string {
-  const cleanAuthor = normalizeAuthorName(params.author);
-  return `generated-materials/${params.programSlug}/${params.targetSchoolClass}/${params.subjectId}/${cleanAuthor}_${params.year}/paragraph_${params.paragraphNumber}/level_${params.targetSupportLevel}_${params.targetDiagnosis}.txt`;
+  const cleanAuthor = slugify(params.author);
+  const cleanDiagnosis = slugify(params.targetDiagnosis);
+  return `adapted-materials/${params.programId}/${params.schoolClass}/${params.subjectId}/${cleanAuthor}_${params.year}/paragraph_${params.paragraphNumber}_level_${params.targetSupportLevel}_${cleanDiagnosis}.txt`;
 }
 
 /**
- * ГЕНЕРАТОР ШЛЯХУ ДЛЯ ПЕРСОНАЛЬНОГО АРХІВУ (Флоу №3 — Шлях Мами / Швидкий текст)
- * Формує: personal-materials/[user_id]/[child_id]/[adaptation_uuid].txt
+ * 📁 ГЕНЕРАТОР ПЕРСОНАЛЬНИХ КЛЮЧІВ ДЛЯ КОНКРЕТНОЇ ДИТИНИ
+ * Формує ізольований шлях: personal-materials/[user_id]/[child_id]/[uuid].txt
  */
 export function generatePersonalKey(params: {
   userId: string;

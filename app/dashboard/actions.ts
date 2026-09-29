@@ -14,6 +14,7 @@ interface AdaptTextParams {
   userId: string;
   userRole: "teacher" | "family";
   subjectName: string;
+  contentType: "text" | "attachment" | "test";
   clientChildData: {
     // ✨ Додаємо жорстку типізацію під наш швидкий флоу
     id: string;
@@ -81,14 +82,15 @@ export async function getBooksBySubject(
 }
 
 /**
- * ✨ Крок 2.5: Запит параграфів підручника з урахуванням parent_book_id (Анти-дуплікація)
- * Завантажує структуру глав та параграфів з оригінальної книги-першоджерела.
+ * ✨ Крок 4: Запит параграфів підручника з динамічним зчитуванням тексту з R2
+ * Витягує дерево змісту з Supabase, а сам важкий контент параграфа підтягує прямо з Cloudflare R2.
+ * Повністю безкоштовно для бази даних, без ШІ та без ризику роздуття дискового простору.
  */
 export async function getParagraphsByBook(bookId: string) {
   try {
     const supabase = await createServerConnection();
 
-    // 1. Перевіряємо, чи є у цієї книги батьківський лінк-вказівник
+    // 1. Перевіряємо, чи є у цієї книги батьківський лінк-вказівник (Глобальна дедуплікація НУШ)
     const { data: book, error: bookError } = await supabase
       .from("books")
       .select("id, parent_book_id")
@@ -97,10 +99,10 @@ export async function getParagraphsByBook(bookId: string) {
 
     if (bookError) throw bookError;
 
-    // 2. Якщо parent_book_id існує, беремо контент оригінальної книги, інакше — поточної
+    // 2. Якщо parent_book_id існує, беремо контент оригінальної книги-першоджерела, інакше — поточної
     const targetBookId = book.parent_book_id || book.id;
 
-    // 3. Стягуємо унікальні параграфи
+    // 3. Стягуємо метадані змісту підручника з Supabase
     const { data: paragraphs, error: contentError } = await supabase
       .from("book_contents")
       .select("id, chapter_title, paragraph_number, raw_text")
@@ -108,7 +110,48 @@ export async function getParagraphsByBook(bookId: string) {
       .order("paragraph_number", { ascending: true });
 
     if (contentError) throw contentError;
-    return { success: true, data: paragraphs || [] };
+    if (!paragraphs || paragraphs.length === 0)
+      return { success: true, data: [] };
+
+    // 4. КАНОНІЧНИЙ ПАЙПЛАЙН: Паралельно перетворюємо R2-покажчики на живий Markdown-контент
+    const paragraphsWithLiveText = await Promise.all(
+      paragraphs.map(async (p) => {
+        try {
+          // Перевіряємо, чи в полі raw_text дійсно лежить шлях до нашої теки R2 content.md
+          if (
+            p.raw_text &&
+            (p.raw_text.startsWith("source-books") ||
+              p.raw_text.includes(".md"))
+          ) {
+            // Викликаємо ваш низькорівневий хелпер для стягування чистого файлу
+            const liveMarkdown = await downloadTextFromR2(p.raw_text);
+
+            return {
+              id: p.id,
+              chapter_title: p.chapter_title,
+              paragraph_number: p.paragraph_number,
+              raw_text: liveMarkdown, // На фронтенд повертається повноцінний текст із LaTeX та "Зверни увагу!"
+            };
+          }
+
+          // Ретро-сумісність: якщо там раптом лежить старий сирий текст
+          return p;
+        } catch (r2Error) {
+          console.error(
+            `[R2 Error] Не вдалося зчитати файл для параграфа ${p.paragraph_number}:`,
+            r2Error,
+          );
+          return {
+            id: p.id,
+            chapter_title: p.chapter_title,
+            paragraph_number: p.paragraph_number,
+            raw_text: `⚠️ Не вдалося завантажити контент параграфа зі сховища R2.`,
+          };
+        }
+      }),
+    );
+
+    return { success: true, data: paragraphsWithLiveText };
   } catch (error: any) {
     console.error("Помилка в getParagraphsByBook:", error.message);
     return { success: false, error: error.message, data: [] };
@@ -166,6 +209,7 @@ export async function adaptMaterialAction(params: AdaptTextParams) {
       text: params.text,
       userRole: params.userRole,
       subjectName: params.subjectName,
+      contentType: params.contentType,
       clientChildData: params.clientChildData,
     });
 

@@ -1,100 +1,103 @@
-// 📂 Шлях до файлу: utils/ai/structuring-service.ts
-import OpenAI from "openai";
-
 export interface StructuredBookResult {
   title: string;
   publisher: string;
-  publishing_year: number;
-  detected_subject: string; // Потрібні для валідації в books.ts
-  detected_class: number; // Потрібні для валідації в books.ts
+  publishing_year: number; // 🔥 СУВОРЕ ЧИСЛО! Жодних null чи undefined
+  detected_subject: string;
+  detected_class: number;
   chapters: { title: string; paragraphs: string[] }[];
 }
 
+/**
+ * ⚡ БЕЗКОШТОВНИЙ ПАЙПЛАЙН СТРУКТУРУВАННЯ ТА КРОС-ВАЛІДАЦІЇ (БЕЗ ШІ)
+ */
 export async function runBookStructuringPipeline(
   extractedMarkdown: string,
   expectedClass: number,
   expectedSubjectName: string,
 ): Promise<StructuredBookResult> {
   console.log(
-    "⏳ [КРОК 4] Ініціалізація структурування JSON через OpenAI GPT-4o...",
+    "⏳ [КРОК 2] Запуск контуру точної валідації метаданих без ШІ...",
   );
 
   try {
-    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const safeTextSample = extractedMarkdown.substring(0, 45000);
+    const sampleLower = safeTextSample.toLowerCase();
 
-    const structuringResponse = await openai.chat.completions.create({
-      model: "gpt-4o",
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "system",
-          content: `Ти — системний девелопер та архітектор даних. Твоє завдання — структурувати розпізнаний текст підручника у валідний JSON-об'єкт.
-ОБОВ'ЯЗКОВО уважно проаналізуй перші сторінки контенту підручника та чітко визнач назву предмету українською мовою одним-двома словами (наприклад: Математика, Українська мова, Я досліджую світ) та для якого це класу (суворо цифрою від 1 до 11).
-
-Формат відповіді СУВОРO за цією схемою:
-{
-  "title": "Офіційна назва підручника",
-  "publisher": "Назва видавництва або Глобальний каталог IncluEd",
-  "publishing_year": 2024,
-  "detected_subject": "Назва предмету", // Визначений предмет одним-двома словами українською
-  "detected_class": 1, // Визначений клас суворо як ЧИСЛО
-  "chapters": [
-    {
-      "title": "Повна назва глави або розділу підручника",
-      "paragraphs": ["1.1", "1.2", "1.3"]
+    // 1. Пошук класу (наприклад, "3 клас")
+    let detectedClass = expectedClass;
+    const classMatch = safeTextSample.match(
+      /\b([1-9]|1[0-2])\s*(?:-й\s+)?клас/i,
+    );
+    if (classMatch) {
+      detectedClass = parseInt(classMatch[10], 10);
     }
-  ]
-}`,
-        },
-        {
-          role: "user",
-          content: `Ось розпізнаний текст книги: \n\n${safeTextSample}`,
-        },
-      ],
-      temperature: 0.1,
-    });
 
-    console.log("✅ [КРОК 4] OpenAI успішно сформував відповідь.");
+    // 2. 🛡️ ЗАЛІЗНИЙ ВИЛОВ РОКУ З ЗАГЛУШКОЮ 1111
+    let detectedYear = 1111; // 💡 Ваша заглушка за дефолтом!
+    const preciseYearMatch = safeTextSample.match(
+      /(?:©|р\.|року|видавництво|затверджено)\s*\b(201\d|202\d|203\d)\b/i,
+    );
 
-    // Наша залізобетонна типізація choices без багів синтаксису
-    const finalJsonString =
-      structuringResponse.choices?.[0]?.message?.content || "{}";
+    if (preciseYearMatch && preciseYearMatch[1]) {
+      detectedYear = parseInt(preciseYearMatch[1], 10);
+    } else {
+      const generalYearMatch = safeTextSample.match(/\b(201\d|202\d|203\d)\b/);
+      if (generalYearMatch && generalYearMatch[0]) {
+        detectedYear = parseInt(generalYearMatch[0], 10);
+      }
+    }
 
-    console.log("=======================================================");
-    console.log("🎯 [ФІНАЛЬНИЙ РЕЗУЛЬТАТ ШІ] Структура під базу даних:");
-    console.log(finalJsonString);
-    console.log("=======================================================");
+    // 3. Авто-визначення реального предмету підручника
+    let detectedSubject = expectedSubjectName;
+    const popularSubjects = [
+      "математика",
+      "українська мова",
+      "я досліджую світ",
+      "біологія",
+      "географія",
+      "історія",
+      "фізика",
+      "хімія",
+      "інформатика",
+    ];
+    for (const subj of popularSubjects) {
+      if (sampleLower.includes(subj)) {
+        detectedSubject = subj.charAt(0).toUpperCase() + subj.slice(1);
+        break;
+      }
+    }
 
-    const aiResult = JSON.parse(finalJsonString);
+    const mockStructuredResult: StructuredBookResult = {
+      title: "Підручник НУШ",
+      publisher: "Оригінальне видання",
+      publishing_year: detectedYear, // Передається залізобетонний number (або реальний рік, або 1111)
+      detected_subject: detectedSubject,
+      detected_class: detectedClass,
+      chapters: [],
+    };
 
-    // ==========================================
-    // 🛡️ КРОС-ФІЛЬТР ВІД ТРЕШУ ТА ПОМИЛОК КОРИСТУВАЧА
-    // ==========================================
-    if (
-      aiResult.detected_class &&
-      Number(aiResult.detected_class) !== expectedClass
-    ) {
+    // 🛡️ КРОС-ФІЛЬТР ВІД ПОМИЛОК КОРИСТУВАЧА
+    if (mockStructuredResult.detected_class !== expectedClass) {
       throw new Error(
-        `Клас підручника не збігається! Ви додаєте книгу у кабінет ${expectedClass}-го класу, але ШІ визначив цей файл як підручник для ${aiResult.detected_class}-го класу.`,
+        `Клас підручника не збігається! Ви додаєте книгу у кабінет ${expectedClass}-го класу, але система визначила цей файл як підручник для ${mockStructuredResult.detected_class}-го класу.`,
       );
     }
 
     const chosenSubj = expectedSubjectName.toLowerCase().trim();
-    const aiSubj = String(aiResult.detected_subject || "")
-      .toLowerCase()
-      .trim();
+    const aiSubj = mockStructuredResult.detected_subject.toLowerCase().trim();
+
     if (!aiSubj.includes(chosenSubj) && !chosenSubj.includes(aiSubj)) {
       throw new Error(
-        `Предмет підручника не збігається! Ви обрали категорію "${expectedSubjectName}", але завантажений файл розпізнано як підручник з предмету "${aiResult.detected_subject}".`,
+        `Предмет підручника не збігається! Ви обрали категорію "${expectedSubjectName}", але завантажений файл розпізнано як підручник з предмету "${mockStructuredResult.detected_subject}".`,
       );
     }
 
-    return aiResult as StructuredBookResult;
+    return mockStructuredResult;
   } catch (error: any) {
-    console.error("\n❌❌❌ КРИТИЧНИЙ ЗБІЙ НА ЕТАПІ OpenAI СТРУКТУРУВАННЯ:");
-    console.error(`Повідомлення про помилку: ${error.message}`);
-    console.log("=======================================================\n");
+    console.error(
+      "\n❌❌❌ КРИТИЧНИЙ ЗБІЙ НА ЕТАПІ БЕЗКОШТОВНОЇ ВАЛІДАЦІЇ КНИГИ:",
+      error.message,
+    );
     throw error;
   }
 }
