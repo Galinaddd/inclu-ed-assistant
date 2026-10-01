@@ -1,3 +1,4 @@
+// 📂 Шлях до файлу: app/utils/r2/r2-helpers.ts
 import { PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { r2Client, R2_BUCKET_NAME } from "@/app/utils/r2/r2";
 
@@ -10,7 +11,7 @@ export async function streamToString(stream: any): Promise<string> {
 }
 
 /**
- * Низькорівневий хелпер для завантаження будь-якого тексту в Cloudflare R2
+ * Низькорівневий хелпер для завантаження будь-якого тексту в Cloudflare R2 (Параграфи)
  */
 export async function uploadTextToR2(
   key: string,
@@ -22,6 +23,25 @@ export async function uploadTextToR2(
       Key: key,
       Body: content,
       ContentType: "text/plain; charset=utf-8",
+    }),
+  );
+}
+
+/**
+ * 🖼️ Низькорівневий хелпер для завантаження бінарних буферів у Cloudflare R2 (Обкладинки PNG)
+ * ✨ ГАРАНТОВАНИЙ ЕКСПОРТ: Загасить помилку ts(2305) у файлі r2-streamer.ts!
+ */
+export async function uploadBufferToR2(
+  key: string,
+  buffer: Buffer,
+  contentType: string = "image/png",
+): Promise<void> {
+  await r2Client.send(
+    new PutObjectCommand({
+      Bucket: R2_BUCKET_NAME,
+      Key: key,
+      Body: buffer,
+      ContentType: contentType,
     }),
   );
 }
