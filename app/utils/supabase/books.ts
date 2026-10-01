@@ -1,6 +1,5 @@
-// 📂 Шлях до файлу: utils/supabase/books.ts
+// 📂 Шлях до файлу: app/utils/supabase/books.ts
 import { SupabaseClient } from "@supabase/supabase-js";
-import { parseTextWithLlama } from "../r2/llama-parser";
 
 export interface BookData {
   id: string;
@@ -16,7 +15,8 @@ export interface BookData {
 
 /**
  * 🏛️ ЧИСТА СЕРВЕРНА ЛОГІКА БАЗИ ДАНИХ (Supabase-сервіс)
- * Глобальна дедуплікація підручників НУШ через parent_book_id без OpenAI [1.1].
+ * Глобальна дедуплікація підручників НУШ через parent_book_id без OpenAI.
+ * ✨ ОЧИЩЕНО ВІД ЛАМИ: Тепер приймає вже готовий rawMarkdown через аргументи!
  */
 export async function executeBookRegistrationPipeline(
   supabase: SupabaseClient,
@@ -26,10 +26,10 @@ export async function executeBookRegistrationPipeline(
     schoolClass: number;
     programId: string | null;
     fileName: string;
-    fileBase64: string;
+    rawMarkdown: string; // ✨ Текст передається як готовий аргумент з асинхронного роуту
   },
 ) {
-  // Пошук існуючої книги за хешем та обробка сценаріїв дуплікації (точний збіг або нова програма НУШ) [1.1]
+  // 1. Пошук існуючої книги за хешем та обробка сценаріїв дуплікації [1.1]
   const { data: globalExistingBook, error: searchError } = await supabase
     .from("books")
     .select(
@@ -45,6 +45,7 @@ export async function executeBookRegistrationPipeline(
   if (globalExistingBook) {
     const trueParentId =
       globalExistingBook.parent_book_id || globalExistingBook.id;
+
     const { data: exactSubjectClone, error: cloneCheckError } = await supabase
       .from("books")
       .select(
@@ -81,22 +82,20 @@ export async function executeBookRegistrationPipeline(
     return { isDuplicate: true, data: clonedBook as BookData };
   }
 
-  // Обробка нової книги через LlamaParse та вилучення метаданих [1.1]
-  const rawMarkdown = await parseTextWithLlama(
-    params.fileBase64,
-    params.fileName,
-  );
+  // 2. Обробка нової книги — Ламу звідси ПОВНІСТЮ СТЕРТО. Працюємо з готовим текстом.
   const cleanBookTitle = params.fileName
     .replace(/\.[^/.]+\$/, "")
     .replace(/[_-]/g, " ");
+
   let detectedYear = new Date().getFullYear();
-  const yearMatch = rawMarkdown
+  const yearMatch = params.rawMarkdown
     .substring(0, 4000)
     .match(/\b(201\d|202\d|203\d)\b/);
   if (yearMatch) {
     detectedYear = parseInt(yearMatch[0], 10);
   }
-  // Створюємо головку картку оригінальної книги в базі даних Supabase
+
+  // Створюємо головну картку оригінальної книги в базі даних Supabase
   const { data: newBook, error: insertError } = await supabase
     .from("books")
     .insert({
@@ -116,8 +115,8 @@ export async function executeBookRegistrationPipeline(
 
   if (insertError) throw insertError;
 
-  // Крок Г: НАДІЙНИЙ ОРИГІНАЛЬНИЙ СПЛІТТЕР ПАРАГРАФІВ (Працює за 0 грн)
-  const lines = rawMarkdown.split("\n");
+  // 3. НАДІЖНИЙ ОРИГІНАЛЬНИЙ СПЛІТТЕР ПАРАГРАФІВ (Працює за 0 грн)
+  const lines = params.rawMarkdown.split("\n");
   const tempNodes: any[] = [];
 
   let currentChapterTitle = "Вступні матеріали підручника";
@@ -140,7 +139,7 @@ export async function executeBookRegistrationPipeline(
 
     if (!isStructure) continue;
 
-    const charEndIdx = rawMarkdown.indexOf(lines[i]);
+    const charEndIdx = params.rawMarkdown.indexOf(lines[i]);
 
     if (charEndIdx > currentParagraphStartIdx + 10) {
       const formattedNum = String(paragraphCounter).padStart(3, "0");
@@ -157,28 +156,27 @@ export async function executeBookRegistrationPipeline(
     currentParagraphStartIdx = charEndIdx;
   }
 
-  if (rawMarkdown.length > currentParagraphStartIdx + 10) {
+  if (params.rawMarkdown.length > currentParagraphStartIdx + 10) {
     const formattedNum = String(paragraphCounter).padStart(3, "0");
     tempNodes.push({
       chapter_title: currentChapterTitle,
       paragraph_number: formattedNum,
       start: currentParagraphStartIdx,
-      end: rawMarkdown.length,
+      end: params.rawMarkdown.length,
     });
   }
 
-  // Крок Д: ЗАВАНТАЖЕННЯ КОНТЕНТУ В CLOUDFLARE R2 ТА СИНХРОНІЗАЦІЯ З SUPABASE
+  // 4. ЗАВАНТАЖЕННЯ КОНТЕНТУ В CLOUDFLARE R2 ТА СИНХРОНІЗАЦІЯ З SUPABASE
   const contentRows: any[] = [];
   const { r2Client, R2_BUCKET_NAME } = await import("@/app/utils/r2/r2");
   const { PutObjectCommand } = await import("@aws-sdk/client-s3");
   const { generateSourceKey } = await import("@/app/utils/r2/naming");
 
   for (const node of tempNodes) {
-    const paragraphMarkdownContent = rawMarkdown
+    const paragraphMarkdownContent = params.rawMarkdown
       .substring(node.start, node.end)
       .trim();
 
-    // Використовуємо вашу дефолтну генерацію шляху:
     const r2Key = generateSourceKey({
       programId: params.programId || "unknown_program",
       schoolClass: params.schoolClass,

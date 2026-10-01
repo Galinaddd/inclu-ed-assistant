@@ -1,10 +1,7 @@
 // 📂 Шлях до файлу: app/dashboard/upload/status/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { parseNewBookWithAI } from "@/app/utils/r2/parser-helper";
-import { generateSourceKey } from "@/app/utils/r2/naming";
-import { r2Client, R2_BUCKET_NAME } from "@/app/utils/r2/r2";
-import { PutObjectCommand } from "@aws-sdk/client-s3";
+import { createBookAndStreamContentsToR2 } from "@/app/utils/supabase/upload-helpers";
 import LlamaCloud from "@llamaindex/llama-cloud";
 
 export const maxDuration = 900;
@@ -13,13 +10,16 @@ const llamaClient = new LlamaCloud({
   apiKey: process.env.LLAMA_CLOUD_API_KEY,
 });
 
+/**
+ * 🔍 ЕТАП 2 АСИНХРОННОГО ПАЙПЛАЙНУ: ЦИКЛІЧНЕ ОПИТУВАННЯ СТАТУСУ ТА АСИНХРОННИЙ КОММІТ ОБКЛАДИНКИ
+ */
 export async function POST(request: NextRequest) {
   console.log("\n=======================================================");
-  console.log("🔍 [STATUS ROUTE] ПЕРЕВІРКА ГОТОВНОСТІ ТА ЗБЕРЕЖЕННЯ");
+  console.log("🔍 [API-РОУТ STATUS] ПЕРЕВІРКА СТАТУСУ ТА АСИНХРОННИЙ КОММІТ");
   console.log("=======================================================");
 
   try {
-    // 🔐 ЗОЛОТИЙ АДМІН-КОННЕКШН ДЛЯ ОБХОДУ ПОМИЛКИ RLS!
+    // 🔐 ЗОЛОТИЙ АДМІН-КОННЕКШН ДЛЯ ЗАЛІЗОБЕТОННОГО ОБХОДУ ПОМИЛКИ RLS!
     const supabaseAdmin = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.SUPABASE_SERVICE_ROLE_KEY!,
@@ -33,18 +33,21 @@ export async function POST(request: NextRequest) {
       subjectId,
       schoolClass,
       programId,
+      detectedYear,
+      expectedSubjectName,
     } = data;
 
     if (!llamaFileId || !fileHash || !subjectId || !schoolClass) {
       return NextResponse.json(
-        { success: false, error: "Відсутні метадані таску." },
+        { success: false, error: "Критична помилка: Відсутні метадані таску." },
         { status: 400 },
       );
     }
 
+    // 1. Швидкий мережевий запит статусу Лами у динамічному режимі auto
     const parseResult = (await llamaClient.parsing.parse({
       file_id: llamaFileId,
-      tier: "agentic",
+      tier: "auto",
       version: "latest",
       expand: ["markdown"],
     })) as any;
@@ -52,9 +55,9 @@ export async function POST(request: NextRequest) {
     if (!parseResult) throw new Error("LlamaCloud повернув порожню відповідь.");
 
     const pages = parseResult.markdown?.pages || [];
-    const hasStatus = "status" in parseResult;
-    const currentStatus = hasStatus ? parseResult.status : "";
+    const currentStatus = "status" in parseResult ? parseResult.status : "";
 
+    // Поки ШІ-агенти Лами ще крутять сторінки книги — миттєво відпускаємо клієнта
     if (currentStatus !== "SUCCESS" && pages.length === 0) {
       if (currentStatus === "FAILED" || currentStatus === "ERROR") {
         throw new Error(`LlamaCloud повернув статус помилки: ${currentStatus}`);
@@ -62,94 +65,64 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true, status: "PROCESSING" });
     }
 
+    // 2. Лама успішно фінішувала! Збираємо оригінальний суцільний Markdown контент книги
     const rawMarkdown = pages
       .map((page: any) => (page && "markdown" in page ? page.markdown : ""))
       .join("\n");
 
     if (!rawMarkdown || rawMarkdown.trim().length < 10) {
-      throw new Error("LlamaCloud повернув порожній контент тексту.");
+      throw new Error(
+        "LlamaCloud повернув успішний статус, але порожній контент тексту.",
+      );
     }
 
-    const aiParsedResult = await parseNewBookWithAI(
-      fileHash,
-      "",
-      fileName,
-      rawMarkdown,
-    );
-    const fallbackText = `### Оцифровані матеріали підручника\n\nДаний параграф успішно розпізнано ШІ-асистентом LlamaCloud та збережено у сховище R2.`;
-    const cleanBookTitle = fileName.replace(".pdf", "").replace(/[_-]/g, " ");
-
+    // 3. ✨ БЕЗПЕЧНЕ АСИНХРОННЕ ОДЕРЖАННЯ БУФЕРА ДЛЯ ОБКЛАДИНКИ
+    // Стягуємо вихідний бінарний файл прямо з LlamaCloud за одну команду, щоб вирізати обкладинку!
     console.log(
-      "⏳ Створення запису книги в базі даних Supabase (Bypass RLS)...",
+      "⏳ Завантаження бінарного буфера файлу з LlamaCloud для вирізання обкладинки...",
     );
-    const { data: newBook, error: insertError } = await supabaseAdmin
-      .from("books")
-      .insert({
-        title: cleanBookTitle,
-        publisher: aiParsedResult.publisher || "Видавництво НУШ",
-        publishing_year:
-          aiParsedResult.publishing_year || new Date().getFullYear(),
-        subject_id: subjectId,
-        school_class: schoolClass, // Канонічне поле через підкреслення
-        program_id: programId,
-        file_hash: fileHash,
-      })
-      .select("id, title, publisher, publishing_year")
-      .single();
+    const fileContentResponse = await fetch(
+      `https://llamaindex.ai{llamaFileId}/content`,
+      {
+        headers: { Authorization: `Bearer ${process.env.LLAMA_CLOUD_API_KEY}` },
+      },
+    );
 
-    if (insertError) throw insertError;
-
-    if (aiParsedResult.chapters && aiParsedResult.chapters.length > 0) {
-      const contentRows: any[] = [];
-      const r2Promises: Promise<any>[] = [];
-
-      aiParsedResult.chapters.forEach((chapter: any) => {
-        if (chapter.paragraphs && chapter.paragraphs.length > 0) {
-          chapter.paragraphs.forEach((paragraphNum: any) => {
-            const r2Key = generateSourceKey({
-              programId: programId || "unknown_program",
-              schoolClass: schoolClass,
-              subjectId: subjectId,
-              author: aiParsedResult.publisher || "pidruchnyk",
-              year: aiParsedResult.publishing_year || new Date().getFullYear(),
-              paragraphNumber: paragraphNum,
-            });
-
-            const uploadPromise = r2Client.send(
-              new PutObjectCommand({
-                Bucket: R2_BUCKET_NAME,
-                Key: r2Key,
-                Body: fallbackText,
-                ContentType: "text/markdown; charset=utf-8",
-              }),
-            );
-            r2Promises.push(uploadPromise);
-
-            contentRows.push({
-              book_id: newBook.id,
-              chapter_title: chapter.title,
-              paragraph_number: paragraphNum,
-              raw_text: r2Key,
-            });
-          });
-        }
-      });
-
-      if (r2Promises.length > 0) await Promise.all(r2Promises);
-      if (contentRows.length > 0)
-        await supabaseAdmin.from("book_contents").insert(contentRows);
+    if (!fileContentResponse.ok) {
+      throw new Error(
+        "Не вдалося завантажити бінарний буфер файлу з хмари Лами.",
+      );
     }
+
+    const arrayBuffer = await fileContentResponse.arrayBuffer();
+    const fileBuffer = Buffer.from(arrayBuffer);
+
+    // 4. Викликаємо нашу спільну функцію: вона сама у фоні виріже обкладинку в PNG,
+    // завантажить в R2, створить книгу без RLS та наріже преміальний Markdown контент уроків!
+    const finalBook = await createBookAndStreamContentsToR2(supabaseAdmin, {
+      rawMarkdown,
+      fileName,
+      fileHash,
+      subjectId,
+      schoolClass,
+      programId,
+      publishingYear: Number(detectedYear) || new Date().getFullYear(),
+      fileBuffer, // Передаємо бінарний буфер для асинхронного малювання сторінки 1
+    });
 
     return NextResponse.json({
       success: true,
       status: "COMPLETED",
-      data: newBook,
+      data: finalBook,
     });
-  } catch (error) {
-    const err = error as Error;
-    console.error("❌ ЗБІЙ РОУТУ СТАТУСУ:", err.message);
+  } catch (error: any) {
+    console.error("❌ КРИТИЧНИЙ ЗБІЙ РОУТУ СТАТУСУ НА ЕТАПІ 2:", error.message);
     return NextResponse.json(
-      { success: false, error: err.message },
+      {
+        success: false,
+        error:
+          error.message || "Збій під час фінальної структуризації контенту.",
+      },
       { status: 500 },
     );
   }

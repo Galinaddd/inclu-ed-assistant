@@ -109,6 +109,7 @@ export default function UploadBookModal({
       startPayload.append("fileHash", computedHash);
       startPayload.append("subjectId", subjectId);
       startPayload.append("schoolClass", String(schoolClass));
+      startPayload.append("subjectName", subjectName);
       if (programId) startPayload.append("programId", programId);
 
       const startResponse = await fetch("/dashboard/upload", {
@@ -127,8 +128,21 @@ export default function UploadBookModal({
         );
       }
 
+      // ========================================================
+      // ✨ ВПЕРЕДЖЕНО: КРАСИВЕ СПОВІЩЕННЯ ПРО ДЕДУПЛІКАЦІЮ В НУШ
+      // ========================================================
       if (startRes.status === "DUPLICATE") {
         console.log("🎯 Книга вже існує у базі. Миттєве підключення!");
+
+        // 1. Використовуємо твій рідний стейт для виведення повідомлення на екран модалки!
+        setLoadingStage(
+          `💡 Підручник "${startRes.data?.title || "Обраний файл"}" уже завантажено раніше для цієї освітньої програми! Миттєво підключаємо його...`,
+        );
+
+        // 2. Робимо асинхронну паузу у 2 секунди, щоб вчитель встиг прочитати текст
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+
+        // 3. Викликаємо успішне завершення та закриваємо модалку
         if (onSuccess) onSuccess(startRes.data);
         onClose();
         return;

@@ -161,15 +161,25 @@ export async function getParagraphsByBook(bookId: string) {
 /**
  * Крок 3: Тонка декларативна обгортка дедуплікації підручників
  */
+// 📂 Заміни застарілу функцію в app/dashboard/actions.ts на цей вичищений контур:
+
+/**
+ * ✨ Крок 3: Вичищена декларативна обгортка реєстрації
+ * (Операція перенесена на асинхронні роути продакшену, залишено сумісність інтрефейсів)
+ */
 export async function checkAndRegisterBook(params: {
   fileHash: string;
   subjectId: string;
   schoolClass: number;
   programId: string | null;
   fileName: string;
-  fileBase64: string;
+  rawMarkdown: string; // ✨ Замінено застарілий fileBase64 на чистий готовий текст
 }): Promise<CheckBookResponse> {
   try {
+    const { createServerConnection } = await import("../utils/supabase/server");
+    const { executeBookRegistrationPipeline } =
+      await import("../utils/supabase/books");
+
     const supabase = await createServerConnection();
     const result = await executeBookRegistrationPipeline(supabase, params);
     return { success: true, ...result };
@@ -178,6 +188,7 @@ export async function checkAndRegisterBook(params: {
     return { success: false, error: error.message };
   }
 }
+
 /**
  * ОПЕРАЦІЯ 5: ТОНКИЙ ДЕКЛАРАТИВНИЙ ЕКШЕН АДАПТАЦІЇ ТЕКСТУ
  */
