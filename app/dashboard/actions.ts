@@ -1,13 +1,50 @@
 "use server";
-
-import { createServerConnection } from "../utils/supabase/server";
-import { uploadTextToR2, downloadTextFromR2 } from "../utils/r2/r2-helpers";
-import { generateSourceKey, generateAdaptedKey } from "../utils/r2/naming";
-import { runTextAdaptationPipeline } from "../utils/ai/adaptation-service";
 import {
-  executeBookRegistrationPipeline,
+  checkFileHashOnly,
+  parsePdfTitlePage,
+  validateNushMetadata,
+  parseMetadataFromFilename,
   BookData,
-} from "../utils/supabase/books";
+} from "@/app/utils/supabase/upload-helpers";
+
+import { PutObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { createAdminServerConnection } from "@/app/utils/supabase/server";
+// 🌟 ІМПОРТУЄМО ТВІЙ РІДНИЙ КЛІЄНТ R2
+import { r2Client, R2_BUCKET_NAME } from "@/app/utils/r2/r2";
+import { createBookAndStreamContentsToR2 } from "@/app/utils/r2/r2-streamer";
+// 🌟 Знайди свій імпорт хелперів і додай туди downloadTextFromR2 та uploadTextToR2:
+import { uploadTextToR2, downloadTextFromR2 } from "@/app/utils/r2/r2-helpers";
+// 🌟 Додай імпорт параметрів та пайплайну адаптації з твого ШІ-модуля:
+import { runTextAdaptationPipeline } from "@/app/utils/ai/adaptation-service";
+import {
+  uploadBookToLlamaCloudViaUrl,
+  getLlamaParsingResult,
+} from "@/app/utils/ai/llama-parser";
+
+export interface InitializeUploadResponse {
+  success: boolean;
+  status: "PROCESSING" | "DUPLICATE" | "VALIDATED";
+  uploadUrl?: string;
+  fileKey?: string;
+  fileHash?: string;
+  fileName?: string;
+  detectedYear?: number | null;
+  data?: any;
+  error?: string;
+  statusCode?: number;
+}
+
+interface NewCheckStatusParams {
+  jobId: string;
+  fileHash: string;
+  subjectId: string;
+  schoolClass: number;
+  programId: string | null;
+  detectedYear: number;
+  fileName: string;
+  fileKey: string;
+}
 
 interface AdaptTextParams {
   text: string;
@@ -26,22 +63,268 @@ interface AdaptTextParams {
     diagnosis_title: string;
   };
 }
+/**
+ * 🛡️ ОСОБЛИВИЙ ЕКШЕН 1: ЛАНЦЮЖОК АНАЛІТИЧНИХ ПЕРЕВІРОК НУШ
+ * Виконує суворо контроль вчителя, дедуплікацію в базі Supabase і більше нічого!
+ */
+export async function verifyBookMetadataAction(
+  formData: FormData,
+): Promise<InitializeUploadResponse> {
+  console.log("\n=======================================================");
+  console.log("🔍 [SERVER ACTION] ЗАПУСК ІЗОЛЬОВАНОГО ЛАНЦЮЖКА ПЕРЕВІРОК");
+  console.log("=======================================================");
 
-// ✨ Жорстка типізація повернення екшену для лікування фронтенду без костилів
-export type CheckBookResponse =
-  | { success: true; isDuplicate: boolean; data: BookData }
-  | { success: false; error: string; data?: never; isDuplicate?: never };
+  try {
+    const supabase = await createAdminServerConnection();
+
+    const miniPreviewFile = formData.get("file") as File;
+    const originalName = formData.get("originalName") as string; // Справжнє ім'я книги
+    const fileHash = formData.get("fileHash") as string;
+    const subjectId = formData.get("subjectId") as string;
+    const schoolClass = Number(formData.get("schoolClass"));
+    const expectedSubjectName =
+      (formData.get("subjectName") as string) || "Предмет НУШ";
+    const programId = (formData.get("programId") as string) || null;
+
+    if (!miniPreviewFile || !fileHash || !originalName) {
+      return {
+        success: false,
+        status: "PROCESSING",
+        error: "Критичні дані файлу відсутні.",
+        statusCode: 400,
+      };
+    }
+
+    // --------------------------------------------------------
+    // КРОК 1: ВИКЛИК ЧИСТИХ ДАТЧИКІВ ПО ЧЕРЗІ
+    // --------------------------------------------------------
+    console.log(
+      `[АНАЛІТИКА 🔍] 1. Опитування датчиків розпізнавання рядків та сторінок...`,
+    );
+
+    const fromFilename = parseMetadataFromFilename(originalName);
+    const fromContent = await parsePdfTitlePage(miniPreviewFile, fileHash);
+
+    // Зводимо сирі дані докупи (пріоритет віддаємо тексту PDF сторінок)
+    let finalDetectedClass: number | null =
+      fromContent.detectedClass || fromFilename.detectedClass;
+    let finalDetectedSubject: string | null =
+      fromContent.detectedSubject || fromFilename.detectedSubject;
+    let finalDetectedYear =
+      fromContent.detectedYear ||
+      fromFilename.detectedYear ||
+      new Date().getFullYear();
+
+    // --------------------------------------------------------
+    // КРОК 2: ПЕРЕХРЕСНЕ ПОРІВНЯННЯ (Пошук конфліктів у самому файлі)
+    // --------------------------------------------------------
+    console.log(
+      `[АНАЛІТИКА 🧠] 2. Перевірка на внутрішні конфлікти документа...`,
+    );
+
+    if (
+      fromFilename.detectedSubject &&
+      fromContent.detectedSubject &&
+      fromFilename.detectedSubject !== fromContent.detectedSubject
+    ) {
+      throw new Error(
+        `🚨 Критичний конфлікт документа! Назва файлу вказує на предмет "${fromFilename.detectedSubject}", але всередині сторінок виявлено текст предмета "${fromContent.detectedSubject}". Перевірте правильність файлу!`,
+      );
+    }
+
+    if (
+      fromFilename.detectedClass &&
+      fromContent.detectedClass &&
+      fromFilename.detectedClass !== fromContent.detectedClass
+    ) {
+      throw new Error(
+        `🚨 Критичний конфлікт класів! Назва файлу належить до ${fromFilename.detectedClass}-го класу, а вміст сторінок вказує на ${fromContent.detectedClass}-й клас!`,
+      );
+    }
+
+    if (!finalDetectedClass && !finalDetectedSubject) {
+      console.log(
+        "⚠️ Жодних маркерів НУШ не виявлено в жодному датчику. Тимчасово довіряємо кабінету.",
+      );
+      finalDetectedClass = schoolClass;
+      finalDetectedSubject = expectedSubjectName;
+    }
+
+    // --------------------------------------------------------
+    // КРОК 3: ФІНАЛЬНЕ ПОРІВНЯННЯ З МЕТАДАННИМИ КАБІНЕТУ ВЧИТЕЛЯ
+    // --------------------------------------------------------
+    console.log(
+      `[АНАЛІТИКА 🎯] 3. Виклик універсального валідатора кабінету НУШ...`,
+    );
+    validateNushMetadata(
+      {
+        detectedClass: finalDetectedClass || 0,
+        detectedSubject: finalDetectedSubject || "Предмет НУШ",
+      },
+      schoolClass,
+      expectedSubjectName,
+    );
+    console.log(
+      "✅ [АНАЛІТИКА УСПІШНА] Підручник повністю пройшов контроль кабінету.",
+    );
+
+    // --------------------------------------------------------
+    // КРОК 4: СКЛАДНА ДЕДУПЛІКАЦІЯ ПО ПРОГРАМАМ ТА СТВОРЕННЯ КЛОНІВ
+    // --------------------------------------------------------
+    console.log(
+      `[АНАЛІТИКА 🧱] 4. Перевірка бази даних Supabase на дублікати за хешем...`,
+    );
+    const duplicateResult = await checkFileHashOnly(supabase, {
+      fileHash,
+      subjectId,
+      schoolClass,
+      programId,
+    });
+
+    if (duplicateResult.isDuplicate) {
+      console.log(
+        "🎯 [ДЕДУПЛІКАЦІЯ УСПІХ] Книгу знайдено й успішно підключено! Пайплайн завершено.",
+      );
+      return {
+        success: true,
+        status: "DUPLICATE",
+        data: duplicateResult.data,
+      };
+    }
+
+    // Якщо все ідеально, книга унікальна і кабінет збігається — просто повертаємо статус VALIDATED
+    // Хмару R2 та Ламу на цьому етапі взагалі не чіпаємо!
+    console.log(
+      "🎉 [УСПІХ] Усі перевірки пройдені! Файл готовий до наступного кроку хмари.",
+    );
+    return {
+      success: true,
+      status: "VALIDATED",
+      fileName: originalName,
+      detectedYear: finalDetectedYear,
+    };
+  } catch (error: any) {
+    console.error("❌ [ЗБІЙ ЛАНЦЮЖОКА ПЕРЕВІРОК]:", error.message);
+    const isValidationError =
+      error.message?.includes("🚨") || error.message?.includes("конфлікт");
+    return {
+      success: false,
+      status: "PROCESSING",
+      error: error.message || "Помилка валідації підручника.",
+      statusCode: isValidationError ? 422 : 500,
+    };
+  }
+}
 
 /**
- * Крок 1: Строгий реляційний запит предметів програми
+ * 🛫 ЕКШЕН 2: ГЕНЕРАЦІЯ ТОКЕНУ CLOUDFLARE R2
+ * Викликається тільки після того, як перший екшен повернув статус "VALIDATED"
  */
+export async function generatePresignedR2UrlAction(
+  originalName: string,
+): Promise<{
+  success: boolean;
+  uploadUrl?: string;
+  fileKey?: string;
+  error?: string;
+}> {
+  try {
+    console.log(
+      `[ФЛОУ R2 🔗] Створення підписаного лінку через канонічний r2Client...`,
+    );
+    const fileKey = `textbooks/${Date.now()}-${Math.random().toString(36).substring(2, 8)}.pdf`;
+
+    const command = new PutObjectCommand({
+      Bucket: R2_BUCKET_NAME,
+      Key: fileKey,
+      ContentType: "application/pdf",
+    });
+
+    const uploadUrl = await getSignedUrl(r2Client, command, { expiresIn: 600 });
+    return { success: true, uploadUrl, fileKey };
+  } catch (err: any) {
+    console.error("❌ Помилка R2:", err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * 📡 ЕКШЕН 3: АСИНХРОННИЙ ТРИГЕР ДЛЯ LLAMAPARSE BY URL
+ */
+export async function startLlamaParsingAction(
+  fileUrl: string,
+  fileName: string,
+) {
+  try {
+    return await uploadBookToLlamaCloudViaUrl(fileUrl, fileName);
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * 🔄 ЕКШЕН 4: SERVER ACTION ОПИТУВАННЯ ЧЕРГИ ТА ФІНАЛЬНИЙ КОММІТ В БД
+ */
+export async function checkLlamaStatusAndCommitAction(
+  params: NewCheckStatusParams,
+) {
+  try {
+    const supabaseAdmin = await createAdminServerConnection();
+    const parseResult = (await getLlamaParsingResult(params.jobId)) as any;
+
+    const currentStatus = parseResult?.status || "";
+    const pages = parseResult?.markdown?.pages || [];
+
+    console.log(
+      `📡 [LAMA STATUS]: "${currentStatus}" | Сторінок: ${pages.length}`,
+    );
+
+    if (currentStatus !== "SUCCESS" && pages.length === 0) {
+      if (currentStatus === "FAILED" || currentStatus === "ERROR") {
+        throw new Error(`LlamaCloud повернув помилку: ${currentStatus}`);
+      }
+      return { success: true, status: "PROCESSING" };
+    }
+
+    const rawMarkdown = pages
+      .map((page: any) => page?.markdown || "")
+      .join("\n");
+    if (!rawMarkdown || rawMarkdown.trim().length < 10) {
+      throw new Error("Спарсений текст підручника порожній.");
+    }
+
+    const llamaCoverUrl =
+      parseResult?.file_url ||
+      parseResult?.cover_image_url ||
+      "/images/default-book-cover.png";
+
+    const finalBook = await createBookAndStreamContentsToR2(supabaseAdmin, {
+      rawMarkdown,
+      fileName: params.fileName,
+      fileHash: params.fileHash,
+      subjectId: params.subjectId,
+      schoolClass: params.schoolClass,
+      programId: params.programId,
+      publishingYear: params.detectedYear,
+      fileKey: params.fileKey,
+      llamaCoverUrl,
+    });
+
+    return { success: true, status: "COMPLETED", data: finalBook };
+  } catch (error: any) {
+    console.error("❌ [ПОМИЛКА ЕТАПУ 2]:", error.message);
+    return { success: false, error: error.message };
+  }
+}
+
 export async function getSubjectsByChild(
   schoolClass: number,
   programId: string | null,
 ) {
   try {
     if (!programId) return { success: true, data: [] };
-    const supabase = await createServerConnection();
+    const supabase = await createAdminServerConnection();
+
     const { data, error } = await supabase
       .from("program_subjects")
       .select("id, subject_name, program_id, school_class")
@@ -57,15 +340,14 @@ export async function getSubjectsByChild(
   }
 }
 
-/**
- * Крок 2: Строгий реляційний запит підручників
- */
+// 📂 Шлях до файлу: app/dashboard/actions.ts
+
 export async function getBooksBySubject(
   subjectId: string,
   schoolClass: number,
 ) {
   try {
-    const supabase = await createServerConnection();
+    const supabase = await createAdminServerConnection();
     const { data, error } = await supabase
       .from("books")
       .select("id, title, publisher, publishing_year")
@@ -81,292 +363,82 @@ export async function getBooksBySubject(
   }
 }
 
-/**
- * ✨ Крок 4: Запит параграфів підручника з динамічним зчитуванням тексту з R2
- * Витягує дерево змісту з Supabase, а сам важкий контент параграфа підтягує прямо з Cloudflare R2.
- * Повністю безкоштовно для бази даних, без ШІ та без ризику роздуття дискового простору.
- */
 export async function getParagraphsByBook(bookId: string) {
   try {
-    const supabase = await createServerConnection();
-
-    // 1. Перевіряємо, чи є у цієї книги батьківський лінк-вказівник (Глобальна дедуплікація НУШ)
-    const { data: book, error: bookError } = await supabase
-      .from("books")
-      .select("id, parent_book_id")
-      .eq("id", bookId)
-      .single();
-
-    if (bookError) throw bookError;
-
-    // 2. Якщо parent_book_id існує, беремо контент оригінальної книги-першоджерела, інакше — поточної
-    const targetBookId = book.parent_book_id || book.id;
-
-    // 3. Стягуємо метадані змісту підручника з Supabase
-    const { data: paragraphs, error: contentError } = await supabase
+    const supabase = await createAdminServerConnection();
+    const { data, error } = await supabase
       .from("book_contents")
-      .select("id, chapter_title, paragraph_number, raw_text")
-      .eq("book_id", targetBookId)
+      .select("id, book_id, chapter_title, paragraph_number, raw_text")
+      .eq("book_id", bookId)
       .order("paragraph_number", { ascending: true });
 
-    if (contentError) throw contentError;
-    if (!paragraphs || paragraphs.length === 0)
-      return { success: true, data: [] };
-
-    // 4. КАНОНІЧНИЙ ПАЙПЛАЙН: Паралельно перетворюємо R2-покажчики на живий Markdown-контент
-    const paragraphsWithLiveText = await Promise.all(
-      paragraphs.map(async (p) => {
-        try {
-          // Перевіряємо, чи в полі raw_text дійсно лежить шлях до нашої теки R2 content.md
-          if (
-            p.raw_text &&
-            (p.raw_text.startsWith("source-books") ||
-              p.raw_text.includes(".md"))
-          ) {
-            // Викликаємо ваш низькорівневий хелпер для стягування чистого файлу
-            const liveMarkdown = await downloadTextFromR2(p.raw_text);
-
-            return {
-              id: p.id,
-              chapter_title: p.chapter_title,
-              paragraph_number: p.paragraph_number,
-              raw_text: liveMarkdown, // На фронтенд повертається повноцінний текст із LaTeX та "Зверни увагу!"
-            };
-          }
-
-          // Ретро-сумісність: якщо там раптом лежить старий сирий текст
-          return p;
-        } catch (r2Error) {
-          console.error(
-            `[R2 Error] Не вдалося зчитати файл для параграфа ${p.paragraph_number}:`,
-            r2Error,
-          );
-          return {
-            id: p.id,
-            chapter_title: p.chapter_title,
-            paragraph_number: p.paragraph_number,
-            raw_text: `⚠️ Не вдалося завантажити контент параграфа зі сховища R2.`,
-          };
-        }
-      }),
-    );
-
-    return { success: true, data: paragraphsWithLiveText };
+    if (error) throw error;
+    return { success: true, data: data || [] };
   } catch (error: any) {
-    console.error("Помилка в getParagraphsByBook:", error.message);
+    console.error("❌ Помилка getParagraphsByBook:", error.message);
     return { success: false, error: error.message, data: [] };
   }
 }
 
-/**
- * Крок 3: Тонка декларативна обгортка дедуплікації підручників
- */
-// 📂 Заміни застарілу функцію в app/dashboard/actions.ts на цей вичищений контур:
-
-/**
- * ✨ Крок 3: Вичищена декларативна обгортка реєстрації
- * (Операція перенесена на асинхронні роути продакшену, залишено сумісність інтрефейсів)
- */
-export async function checkAndRegisterBook(params: {
-  fileHash: string;
-  subjectId: string;
-  schoolClass: number;
-  programId: string | null;
-  fileName: string;
-  rawMarkdown: string; // ✨ Замінено застарілий fileBase64 на чистий готовий текст
-}): Promise<CheckBookResponse> {
-  try {
-    const { createServerConnection } = await import("../utils/supabase/server");
-    const { executeBookRegistrationPipeline } =
-      await import("../utils/supabase/books");
-
-    const supabase = await createServerConnection();
-    const result = await executeBookRegistrationPipeline(supabase, params);
-    return { success: true, ...result };
-  } catch (error: any) {
-    console.error("Помилка в checkAndRegisterBook:", error.message);
-    return { success: false, error: error.message };
-  }
-}
-
-/**
- * ОПЕРАЦІЯ 5: ТОНКИЙ ДЕКЛАРАТИВНИЙ ЕКШЕН АДАПТАЦІЇ ТЕКСТУ
- */
 export async function adaptMaterialAction(params: AdaptTextParams) {
   try {
-    const supabase = await createServerConnection();
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    const currentUserId = session?.user?.id || params.userId;
+    const supabase = await createAdminServerConnection();
 
-    // Перевірка кредитів на балансі профілю користувача
-    const { data: profile, error: profileError } = await supabase
-      .from("profiles")
-      .select("ai_credits_left")
-      .eq("id", currentUserId)
-      .single();
+    const realOriginalText = params.text.startsWith("sources/")
+      ? await downloadTextFromR2(params.text)
+      : params.text;
 
-    if (profileError) throw profileError;
-    if (!profile || profile.ai_credits_left <= 0) {
-      throw new Error(
-        "Недостатньо кредитів для генерації. Будь ласка, оновіть баланс.",
-      );
+    if (!realOriginalText || realOriginalText.trim().length < 5) {
+      throw new Error("Вхідний текст параграфа порожній.");
     }
 
-    // Виклик декомпонованого ШІ-пайплайну, куди летять готові клієнтські дані
-    const { aiText, autoTitle, r2Key } = await runTextAdaptationPipeline({
-      userId: currentUserId,
-      text: params.text,
+    const aiResult = (await runTextAdaptationPipeline({
+      text: realOriginalText,
+      userId: params.userId,
       userRole: params.userRole,
       subjectName: params.subjectName,
       contentType: params.contentType,
       clientChildData: params.clientChildData,
-    });
+    })) as any;
 
-    // Завантажуємо результат адаптації в Cloudflare R2
-    await uploadTextToR2(r2Key, aiText);
+    const adaptedR2Key = `adapted-materials/${params.clientChildData.id}/${Date.now()}-${params.contentType}.md`;
+    await uploadTextToR2(
+      adaptedR2Key,
+      aiResult.adaptedMarkdown || aiResult.text || "",
+    );
 
-    // Записуємо факт адаптації в історію
-    const { error: dbError } = await supabase
-      .from("history_adaptations")
+    const { data: logRecord, error: dbErr } = await supabase
+      .from("adaptation_logs")
       .insert({
-        user_id: currentUserId,
         child_id: params.clientChildData.id,
-        book_id: null,
-        paragraph_number: null,
-        title: autoTitle,
-        r2_path: r2Key,
-      });
-
-    if (dbError) throw dbError;
-
-    // Списуємо 1 ШІ-кредит за успішну генерацію
-    await supabase
-      .from("profiles")
-      .update({ ai_credits_left: profile.ai_credits_left - 1 })
-      .eq("id", currentUserId);
-
-    return { success: true, data: aiText };
-  } catch (error: any) {
-    console.error("Помилка в adaptMaterialAction:", error.message);
-    return { success: false, error: error.message };
-  }
-}
-
-/**
- * ОПЕРАЦІЯ 6: СТВОРЕННЯ КАРТКИ ДИТИНИ (АНТИ-ФРОД ОБМЕЖЕННЯ)
- */
-export async function createChildProfileAction(childData: {
-  childName: string;
-  childProfile: string;
-  supportLevel: number;
-  childAge: number;
-  schoolClass: number;
-  programId: string | null;
-}) {
-  try {
-    const supabase = await createServerConnection();
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    if (!session?.user?.id) throw new Error("Користувач не авторизований.");
-
-    const { count, error: countError } = await supabase
-      .from("children_profiles")
-      .select("*", { count: "exact", head: true })
-      .eq("user_id", session.user.id);
-
-    if (countError) throw countError;
-    if (count !== null && count >= 3) {
-      throw new Error("Досягнуто ліміт карток дітей (макс. 3).");
-    }
-
-    const { data: newChild, error: insertError } = await supabase
-      .from("children_profiles")
-      .insert({
-        user_id: session.user.id,
-        child_name: childData.childName,
-        child_profile: childData.childProfile,
-        support_level: childData.supportLevel,
-        child_age: childData.childAge,
-        school_class: childData.schoolClass,
-        program_id: childData.programId,
-      })
-      .select()
-      .single();
-
-    if (insertError) throw insertError;
-    return { success: true, data: newChild };
-  } catch (error: any) {
-    console.error("Помилка in createChildProfileAction:", error.message);
-    return { success: false, error: error.message };
-  }
-}
-
-export async function saveSourceParagraph(params: any) {
-  try {
-    const supabase = await createServerConnection();
-    const r2Key = generateSourceKey(params);
-    await uploadTextToR2(r2Key, params.contentMarkdown);
-    const { data } = await supabase
-      .from("book_contents")
-      .insert({
-        book_id: params.bookId,
-        chapter_title: params.chapterTitle,
-        paragraph_number: params.paragraphNumber,
-        raw_text: r2Key,
-      })
-      .select()
-      .single();
-    return { success: true, data };
-  } catch (error: any) {
-    return { success: false, error: error.message };
-  }
-}
-
-export async function getSourceParagraphContent(r2Key: string) {
-  try {
-    return { success: true, data: await downloadTextFromR2(r2Key) };
-  } catch (error: any) {
-    return { success: false, error: error.message, data: "" };
-  }
-}
-
-export async function saveAdaptedMaterial(params: any) {
-  try {
-    const supabase = await createServerConnection();
-    const r2Key = generateAdaptedKey(params);
-    await uploadTextToR2(r2Key, params.adaptedContent);
-    const { data } = await supabase
-      .from("generated_materials")
-      .insert({
         user_id: params.userId,
-        child_id: params.childId,
-        book_id: params.bookId,
-        paragraph_number: params.paragraphNumber,
-        subject_id: params.subjectId,
-        category: params.category,
-        topic_title: params.topicTitle,
-        target_diagnosis: params.targetDiagnosis,
-        target_support_level: params.targetSupportLevel,
-        target_school_class: params.targetSchoolClass,
-        target_child_age: params.targetChildAge,
-        target_program_id: params.targetProgramId,
-        content_markdown: r2Key,
+        subject_name: params.subjectName,
+        content_type: params.contentType,
+        original_text_pointer: params.text.startsWith("sources/")
+          ? params.text
+          : null,
+        adapted_text_pointer: adaptedR2Key,
+        tokens_used: aiResult.metadata?.tokensUsed || 0,
+        adaptation_strategy_applied:
+          aiResult.metadata?.strategyApplied || "default",
       })
       .select()
       .single();
-    return { success: true, data };
-  } catch (error: any) {
-    return { success: false, error: error.message };
-  }
-}
 
-export async function getAdaptedMaterialContent(r2Key: string) {
-  try {
-    return { success: true, data: await downloadTextFromR2(r2Key) };
+    if (dbErr) throw dbErr;
+
+    return {
+      success: true,
+      adaptedMarkdown: aiResult.adaptedMarkdown || aiResult.text || "",
+      data: logRecord,
+    };
   } catch (error: any) {
-    return { success: false, error: error.message, data: "" };
+    console.error("❌ КРИТИЧНИЙ ЗБІЙ ШІ-АДАПТАЦІЇ В ЕКШЕНІ:", error.message);
+    return {
+      success: false,
+      error: error.message,
+      adaptedMarkdown: "",
+      data: null,
+    };
   }
 }

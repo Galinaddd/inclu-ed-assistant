@@ -1,38 +1,33 @@
-// 📂 Шлях до файлу: app/utils/supabase/upload-helpers/filename-parser.ts
-
 /**
- * 🛠️ ОКРЕМА ФУНКЦІЯ: Глибокий аналіз імені файлу (Підстраховка для "німих" PDF)
- * Витягує клас, рік та предмет суто з тексту назви документа.
+ * 🛠️ ЧИСТА ФУНКЦІЯ: Автономний аналіз імені файлу
+ * Шукає маркери і повертає значення або null, якщо збігів немає.
  */
-export function parseMetadataFromFilename(
-  fileName: string,
-  expectedSubjectName: string,
-) {
+export function parseMetadataFromFilename(fileName: string) {
   const nameLower = fileName.toLowerCase().replace(/[_-]/g, " ");
 
   let detectedClass: number | null = null;
-  let detectedYear = 1111;
-  let hasSubjectMatch = false;
+  let detectedYear: number | null = null;
+  let detectedSubject: string | null = null;
 
-  // 1. Пошук класу в імені файлу (наприклад: "1 klas", "6-клас", "11klas")
+  // 1. Пошук класу в назві (наприклад, "1 клас", "6-клас", "11klas")
   const classMatch =
-    nameLower.match(/\b([1-9]|1[0-2])\s*клас/i) ||
-    nameLower.match(/\b([1-9]|1[0-2])\s*klas/i) ||
-    nameLower.match(/\b([1-9]|1[0-2])\s*kl\b/i);
+    nameLower.match(/\b([1-9]|1[0-2])[- ]*клас/i) ||
+    nameLower.match(/\b([1-9]|1[0-2])[- ]*klas/i) ||
+    nameLower.match(/\b([1-9]|1[0-2])[- ]*кл\b/i);
+
   if (classMatch && classMatch[1]) {
     detectedClass = parseInt(classMatch[1], 10);
   }
 
-  // 2. Пошук чотирьох цифр року видання (наприклад: "2025", "2024")
+  // 2. Пошук чотирьох цифр року видання (наприклад, "2025", "2024")
   const yearMatch = nameLower.match(/\b(201\d|202\d|203\d)\b/);
   if (yearMatch && yearMatch[1]) {
     detectedYear = parseInt(yearMatch[1], 10);
   }
 
-  // 3. Зіставлення предметів з урахуванням латинської транслітерації в імені файлу
-  const chosenSubjectLower = expectedSubjectName.toLowerCase().trim();
+  // 3. Зіставлення предмета за ключовими словами
   const subjectKeywords: Record<string, string[]> = {
-    "українська мова": [
+    "Українська мова": [
       "українськ",
       "укр",
       "мова",
@@ -41,22 +36,26 @@ export function parseMetadataFromFilename(
       "mova",
       "ukr",
     ],
-    "українська література": [
+    "Українська література": [
       "література",
       "літ",
       "lit",
       "literatura",
       "ukrlit",
     ],
-    математика: ["матем", "мат", "math", "matematika"],
-    "я досліджую світ": ["світ", "дослідж", "ядо", "jds", "yds"],
-    "англійська мова": ["англійськ", "англ", "english", "eng"],
+    Математика: ["матем", "мат", "math", "matematika"],
+    "Я досліджую світ": ["світ", "дослідж", "ядо", "jds", "yds"],
+    "Англійська мова": ["англійськ", "англ", "english", "eng"],
   };
 
-  const keywords = subjectKeywords[chosenSubjectLower] || [
-    chosenSubjectLower.substring(0, 4),
-  ];
-  hasSubjectMatch = keywords.some((keyword) => nameLower.includes(keyword));
+  for (const [subjectName, keywords] of Object.entries(subjectKeywords)) {
+    if (keywords.some((keyword) => nameLower.includes(keyword))) {
+      detectedSubject = subjectName;
+      break;
+    }
+  }
 
-  return { detectedClass, detectedYear, hasSubjectMatch };
+  // Повертаємо чисті значення або null. Якщо файл називався "1.pdf",
+  // то detectedClass буде 1, а subject буде null, і сервер з цим легко розбереться.
+  return { detectedClass, detectedYear, detectedSubject };
 }

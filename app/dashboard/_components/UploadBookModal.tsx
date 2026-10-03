@@ -10,6 +10,14 @@ import {
   Loader2,
 } from "lucide-react";
 import { calculateFileSHA256 } from "@/app/utils/crypto";
+import {
+  verifyBookMetadataAction, // Наш новий Етап 1 перевірок
+  generatePresignedR2UrlAction, // Новий Етап 2 створення лінку R2
+  startLlamaParsingAction,
+  checkLlamaStatusAndCommitAction,
+} from "@/app/dashboard/actions";
+
+import { BookData } from "@/app/utils/supabase/upload-helpers";
 
 interface UploadBookModalProps {
   isOpen: boolean;
@@ -18,12 +26,7 @@ interface UploadBookModalProps {
   schoolClass: number;
   subjectId: string;
   programId: string | null;
-  onSuccess?: (newBook: {
-    id: string;
-    title: string;
-    publisher: string | null;
-    publishing_year: number | null;
-  }) => void;
+  onSuccess?: (newBook: BookData) => void; // ✨ ВИПРАВЛЕНО: Тепер типи ідеально збігаються з екшеном!
 }
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -88,6 +91,7 @@ export default function UploadBookModal({
       }
     }
   };
+
   const handleTriggerHashing = async () => {
     if (!file) return;
     setIsPending(true);
@@ -95,117 +99,209 @@ export default function UploadBookModal({
     setFileHash("");
     setSecondsElapsed(0);
 
+    const timerInterval = setInterval(() => {
+      setSecondsElapsed((prev) => prev + 1);
+    }, 1000);
+
     try {
+      // 1. Хешуємо великий файл для майбутньої перевірки на дублікати
       setLoadingStage("Вирахування цифрового відбитку файлу (SHA-256)...");
       const computedHash = await calculateFileSHA256(file);
       setFileHash(computedHash);
 
+      // 2. Нарізаємо легке прев'ю на клієнті, щоб захистити сервер від RAM-крашу
       setLoadingStage(
-        "Надсилання файлу та ініціалізація таску в LlamaCloud...",
+        "Створення полегшеного прев'ю для верифікації структури...",
       );
+      const { PDFDocument } = await import("pdf-lib");
+      const fileArrayBuffer = await file.arrayBuffer();
+      const srcDoc = await PDFDocument.load(fileArrayBuffer);
+      const previewDoc = await PDFDocument.create();
 
+      const pagesToCopy = Math.min(5, srcDoc.getPageCount());
+      const pageIndices = Array.from({ length: pagesToCopy }, (_, i) => i);
+      const copiedPages = await previewDoc.copyPages(srcDoc, pageIndices);
+
+      copiedPages.forEach((page: any) => previewDoc.addPage(page));
+
+      const previewBytes = await previewDoc.save();
+
+      // Конвертуємо Uint8Array у Buffer для 100% сумісності з типами BlobPart
+      const miniPreviewBlob = new Blob([Buffer.from(previewBytes)], {
+        type: "application/pdf",
+      });
+      const miniPreviewFile = new File([miniPreviewBlob], "mini-preview.pdf", {
+        type: "application/pdf",
+      });
+
+      // 3. Пакуємо payload та викликаємо ЕТАП 1: Ізольований ланцюжок перевірок НУШ
+      setLoadingStage(
+        "Перевірка освітньої програми, дисципліни та наявності в базі...",
+      );
       const startPayload = new FormData();
-      startPayload.append("file", file);
+      startPayload.append("file", miniPreviewFile);
+      startPayload.append("originalName", file.name); // Справжнє ім'я оригінальної книги
       startPayload.append("fileHash", computedHash);
       startPayload.append("subjectId", subjectId);
       startPayload.append("schoolClass", String(schoolClass));
       startPayload.append("subjectName", subjectName);
       if (programId) startPayload.append("programId", programId);
 
-      const startResponse = await fetch("/dashboard/upload", {
-        method: "POST",
-        body: startPayload,
-      });
+      // Викликаємо наш новий розділений екшен (Ламу та R2 тут не чіпаємо!)
+      const startRes = await verifyBookMetadataAction(startPayload);
 
-      const startRes = await startResponse.json().catch(() => ({
-        success: false,
-        error: "Невдала серіалізація відповіді завантаження.",
-      }));
-
-      if (!startResponse.ok || !startRes.success) {
+      if (!startRes || !startRes.success) {
         throw new Error(
-          startRes.error || "Не вдалося ініціювати завантаження підручника.",
+          startRes?.error || "Файл не пройшов серверні валідації НУШ.",
         );
       }
 
-      // ========================================================
-      // ✨ ВПЕРЕДЖЕНО: КРАСИВЕ СПОВІЩЕННЯ ПРО ДЕДУПЛІКАЦІЮ В НУШ
-      // ========================================================
+      // Обробка дубліката (Книга вже є в базі — миттєво підключаємо й виходимо)
       if (startRes.status === "DUPLICATE") {
-        console.log("🎯 Книга вже існує у базі. Миттєве підключення!");
-
-        // 1. Використовуємо твій рідний стейт для виведення повідомлення на екран модалки!
+        clearInterval(timerInterval);
         setLoadingStage(
-          `💡 Підручник "${startRes.data?.title || "Обраний файл"}" уже завантажено раніше для цієї освітньої програми! Миттєво підключаємо його...`,
+          `💡 Підручник "${startRes.data?.title || "Обраний файл"}" знайдено в системі! Миттєво підключаємо...`,
         );
+        await delay(2500);
 
-        // 2. Робимо асинхронну паузу у 2 секунди, щоб вчитель встиг прочитати текст
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-
-        // 3. Викликаємо успішне завершення та закриваємо модалку
-        if (onSuccess) onSuccess(startRes.data);
+        if (onSuccess && startRes.data) onSuccess(startRes.data);
         onClose();
         return;
       }
 
-      const { llamaFileId, fileName } = startRes;
+      // 4. ЕТАП 2: Якщо валідація успішна — генеруємо токен прямого завантаження Cloudflare R2
+      if (startRes.status !== "VALIDATED") {
+        throw new Error(
+          "Неочікуваний статус відповіді сервера після валідації.",
+        );
+      }
+
+      setLoadingStage(
+        "Контроль пройдено успішно. Генерація токену доступу хмари R2...",
+      );
+      const r2TokenRes = await generatePresignedR2UrlAction(
+        startRes.fileName || file.name,
+      );
+
+      if (
+        !r2TokenRes ||
+        !r2TokenRes.success ||
+        !r2TokenRes.uploadUrl ||
+        !r2TokenRes.fileKey
+      ) {
+        throw new Error(
+          r2TokenRes?.error ||
+            "Не вдалося згенерувати параметри доступу до хмари.",
+        );
+      }
+
+      const { uploadUrl, fileKey } = r2TokenRes;
+      const detectedYear = startRes.detectedYear || new Date().getFullYear();
+
+      // 5. Пряме клієнтське завантаження оригінального важкого файлу в Cloudflare R2 повз Next.js
+      setLoadingStage(
+        "Пряме безпечне завантаження книги в Cloudflare R2 (0MB RAM сервера)...",
+      );
+      const r2UploadResponse = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/pdf",
+        },
+        body: file, // Оригінальний великий файл летить напряму з браузера
+      });
+
+      if (!r2UploadResponse.ok) {
+        throw new Error(
+          "Не вдалося завантажити оригінальний файл у хмарне сховище R2.",
+        );
+      }
+
+      // Формуємо публічний домен твого R2 сховища
+      const r2PublicDomain =
+        process.env.NEXT_PUBLIC_R2_PUBLIC_DOMAIN ||
+        "https://your-r2-public-domain.com";
+      const r2PublicUrl = `${r2PublicDomain}/${fileKey}`;
+
+      // 6. ЕТАП 3: Запуск асинхронного аналізу в LlamaParse через Server Action
+      setLoadingStage("Реєстрація завдання в системі аналізу ШІ...");
+
+      const parseTriggerRes = (await startLlamaParsingAction(
+        r2PublicUrl,
+        file.name,
+      )) as { success: boolean; jobId?: string; error?: string };
+
+      if (
+        !parseTriggerRes ||
+        !parseTriggerRes.success ||
+        !parseTriggerRes.jobId
+      ) {
+        throw new Error(
+          parseTriggerRes?.error ||
+            "Не вдалося ініціювати аналіз книги через ШІ.",
+        );
+      }
+
+      const jobId: string = parseTriggerRes.jobId;
+
+      // 7. ЕТАП 4: Асинхронний цикл опитування черги ШІ
       let isFinished = false;
-      let currentSeconds = 0;
+      let attempts = 0;
 
       while (!isFinished) {
-        currentSeconds += 5;
-        setSecondsElapsed(currentSeconds);
+        if (attempts >= 90) {
+          // Ліміт ~7.5 хвилин на велику книгу
+          throw new Error(
+            "Перевищено ліміт часу очікування ШІ. Будь ласка, спробуйте пізніше.",
+          );
+        }
+
         setLoadingStage(
-          `ШІ аналізує сторінки книги... Обробка триває: ${currentSeconds}с`,
+          `ШІ аналізує сторінки книги (очікування: ${secondsElapsed}с)...`,
         );
 
         await delay(5000);
+        attempts++;
 
-        const checkResponse = await fetch("/dashboard/upload/status", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            llamaFileId,
-            fileName,
-            fileHash: computedHash,
-            subjectId,
-            schoolClass,
-            programId,
-          }),
+        // Опитуємо четвертий Server Action перевірки статусу та фінального комміту в БД
+        const checkRes = await checkLlamaStatusAndCommitAction({
+          jobId,
+          fileHash: computedHash,
+          subjectId,
+          schoolClass,
+          programId,
+          detectedYear,
+          fileName: file.name,
+          fileKey: fileKey,
         });
 
-        const checkRes = await checkResponse.json().catch(() => ({
-          success: false,
-          error: "Невдала серіалізація відповіді статусу.",
-        }));
-
-        if (!checkResponse.ok || !checkRes.success) {
+        if (!checkRes || !checkRes.success) {
           throw new Error(
-            checkRes.error || "Збій під час обробки підручника на сервері.",
+            checkRes?.error || "Збій під час обробки підручника на сервері.",
           );
         }
 
         if (checkRes.status === "COMPLETED") {
           isFinished = true;
-          console.log(
-            "✅ Великий підручник успішно оцифровано та структуровано!",
-          );
-          if (onSuccess) onSuccess(checkRes.data);
+          clearInterval(timerInterval);
+          setLoadingStage("🎉 Книгу успішно оцифровано та збережено!");
+          await delay(1500);
+
+          if (onSuccess && checkRes.data) onSuccess(checkRes.data);
           onClose();
           return;
         }
       }
-    } catch (serverErr) {
-      const err = serverErr as Error;
-      console.error("Критичний збій пайплайну:", err);
-      setErrorMessage(err.message || "Сталася помилка обробки підручника.");
+    } catch (serverErr: any) {
+      clearInterval(timerInterval);
+      setErrorMessage(
+        serverErr.message || "Сталася помилка обробки підручника.",
+      );
     } finally {
       setIsPending(false);
       setLoadingStage("");
     }
   };
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"

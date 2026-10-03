@@ -1,26 +1,16 @@
+// 📂 Шлях до файлу: app/utils/r2/r2.ts
 import { S3Client } from "@aws-sdk/client-s3";
-
-// Залізне правило архітектури: перевірка ключів на сервері
-if (
-  !process.env.R2_ACCOUNT_ID ||
-  !process.env.R2_ACCESS_KEY_ID ||
-  !process.env.R2_SECRET_ACCESS_KEY
-) {
-  throw new Error(
-    "Критична помилка: Відсутні обов'язкові змінні оточення Cloudflare R2 у .env.local",
-  );
-}
 
 /**
  * Ініціалізація синглтон-клієнта Cloudflare R2
- * Використовує сумісний S3 API протокол для швидкої роботи з текстами книг та адаптацій
+ * Обгортаємо в функцію або створюємо клієнт безпечно, щоб браузер не падав при імпорті
  */
 export const r2Client = new S3Client({
   region: "auto",
-  endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+  endpoint: `https://${process.env.R2_ACCOUNT_ID || ""}.r2.cloudflarestorage.com`,
   credentials: {
-    accessKeyId: process.env.R2_ACCESS_KEY_ID,
-    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+    accessKeyId: process.env.R2_ACCESS_KEY_ID || "dummy-key",
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || "dummy-secret",
   },
 });
 

@@ -1,6 +1,5 @@
-// 📂 Шлях до файлу: app/utils/r2/r2-streamer.ts
 import { SupabaseClient, createClient } from "@supabase/supabase-js";
-import { uploadTextToR2, uploadBufferToR2 } from "./r2-helpers";
+import { uploadTextToR2 } from "./r2-helpers";
 import { generateSourceKey } from "./naming";
 
 export interface BookData {
@@ -14,12 +13,11 @@ export interface BookData {
   file_hash: string | null;
   parent_book_id?: string | null;
   cover_url?: string | null;
+  file_path?: string | null;
 }
 
 /**
  * 🪓 КРОК 4: АДМІН-СТВОРЕННЯ КНИГИ ТА СТРІМІНГ Markdown В R2 (Bypass RLS)
- * Логіка нарізки контенту повністю відокремлена від низькорівневих S3-команд.
- * ✨ ВИПРАВЛЕНО: Регулярку очищено від шкідливих символів, заголовки чисті для дашборду!
  */
 export async function createBookAndStreamContentsToR2(
   supabase: SupabaseClient,
@@ -31,37 +29,26 @@ export async function createBookAndStreamContentsToR2(
     schoolClass: number;
     programId: string | null;
     publishingYear: number;
-    fileBuffer: Buffer;
+    fileKey: string;
+    llamaCoverUrl?: string | null;
   },
 ): Promise<BookData> {
   console.log(
     "⏳ [R2 СТРІМЕР] Запуск асинхронного процесу створення книги та нарізки контенту...",
   );
 
+  // 🌟 ПОВЕРНУЛИ ОГОЛОШЕННЯ КЛІЄНТА БД
   const nushAdminCommitDb = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
   );
 
-  // 1. АСИНХРОННЕ ВИРІЗАННЯ ОБКЛАДИНКИ: Вирізаємо Сторінку 1 строго у масив
-  let coverKey: string | null = null;
-  try {
-    const pdfImgConvert = require("pdf-img-convert");
-    const coverOutput = await pdfImgConvert.convert(params.fileBuffer, {
-      page_numbers: [1],
-      width: 450,
-    });
+  // 🌟 ПОВЕРНУЛИ ОГОЛОШЕННЯ ОБКЛАДИНКИ
+  const finalCoverUrl =
+    params.llamaCoverUrl || "/images/default-book-cover.png";
+  console.log(`📡 Використовуємо обкладинку книги: ${finalCoverUrl}`);
 
-    if (coverOutput && coverOutput.length > 0) {
-      coverKey = `book-covers/${params.fileHash}.png`;
-      await uploadBufferToR2(coverKey, Buffer.from(coverOutput), "image/png");
-      console.log(`✅ Обкладинку підручника успішно відправлено в R2.`);
-    }
-  } catch (err: any) {
-    console.error("⚠️ Помилка асинхронної генерації обкладинки:", err.message);
-  }
-
-  // Розумне зрізання розширення файлу
+  // 🌟 ПОВЕРНУЛИ ОГОЛОШЕННЯ НАЗВИ
   const cleanBookTitle = params.fileName
     .replace(/\.[^/.]+\$/, "")
     .replace(/[_-]/g, " ");
@@ -78,30 +65,29 @@ export async function createBookAndStreamContentsToR2(
       program_id: params.programId,
       file_hash: params.fileHash,
       parent_book_id: null,
-      cover_url: coverKey,
+      cover_url: finalCoverUrl,
+      file_path: params.fileKey,
     })
     .select(
-      "id, title, publisher, publishing_year, school_class, program_id, subject_id, cover_url",
+      "id, title, publisher, publishing_year, school_class, program_id, subject_id, cover_url, file_path",
     )
     .single();
 
   if (insertError) throw insertError;
 
-  // 3. ТВІЙ ОРИГІНАЛЬНИЙ РОБОЧИЙ СПЛІТТЕР (Очищений від багів та регулярних зсувів)
+  // 3. ТВІЙ ОРИГІНАЛЬНИЙ РОБОЧИЙ СПЛІТТЕР (Повністю збережений)
   const lines = params.rawMarkdown.split("\n");
   const tempNodes: any[] = [];
   let currentChapterTitle = "Вступні матеріали підручника";
   let paragraphCounter = 1;
   let currentParagraphStartIdx = 0;
 
-  // ✨ ВИПРАВЛЕНО: Прибрали шкідливий знак долара наприкінці регулярки!
   const structuralRegex = /^(#{2,3})\s+(.+)/;
 
   for (let i = 0; i < lines.length; i++) {
     const match = lines[i].match(structuralRegex);
     if (!match) continue;
 
-    // ✨ ВИПРАВЛЕНО ts(2339): беремо чистий текст рядка з lines[i]
     const headingLine = lines[i].trim();
     const cleanHeadingText = headingLine.replace(/###|##/g, "").trim();
     const lowerHeading = cleanHeadingText.toLowerCase();
@@ -116,14 +102,14 @@ export async function createBookAndStreamContentsToR2(
     const charEndIdx = params.rawMarkdown.indexOf(lines[i]);
     if (charEndIdx > currentParagraphStartIdx + 10) {
       tempNodes.push({
-        chapter_title: currentChapterTitle, // Зберігаємо чистий текст заголовка для компонента дашборду
+        chapter_title: currentChapterTitle,
         paragraph_number: String(paragraphCounter).padStart(3, "0"),
         start: currentParagraphStartIdx,
         end: charEndIdx,
       });
       paragraphCounter++;
     }
-    currentChapterTitle = cleanHeadingText; // Оновлюємо назву глави БЕЗ решіток для наступного кроку
+    currentChapterTitle = cleanHeadingText;
     currentParagraphStartIdx = charEndIdx;
   }
 
@@ -175,5 +161,16 @@ export async function createBookAndStreamContentsToR2(
     }
   }
 
-  return newBook as BookData;
+  return {
+    id: newBook.id,
+    title: newBook.title,
+    publisher: newBook.publisher,
+    publishing_year: newBook.publishing_year,
+    school_class: newBook.school_class,
+    program_id: newBook.program_id,
+    subject_id: newBook.subject_id,
+    file_hash: params.fileHash,
+    cover_url: newBook.cover_url,
+    file_path: newBook.file_path,
+  } as BookData;
 }

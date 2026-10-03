@@ -6,9 +6,13 @@ import {
   getSubjectsByChild,
   getBooksBySubject,
   getParagraphsByBook,
-  getSourceParagraphContent,
+  // getSourceParagraphContent,
   adaptMaterialAction, // Імпортуємо ШІ-екшен прямо сюди
 } from "./actions";
+
+import { downloadTextFromR2 } from "../utils/r2/r2-helpers";
+// ... (імпорти компонентів та інтерфейси ChildProfile, SubjectData, BookData, ParagraphData залишаються без змін)
+
 import UploadBookModal from "./_components/UploadBookModal";
 import SubjectSelector from "./_components/SubjectSelector";
 import BookSelector from "./_components/BookSelector";
@@ -159,10 +163,14 @@ export default function DashboardPage() {
         activeChild.school_class!,
         activeChild.program_id,
       );
-      if (res.success) setSubjects(res.data);
+      if (res.success && res.data) setSubjects(res.data as SubjectData[]);
       setLoadingSubjects(false);
     });
   }, [activeChild]);
+
+  // 4. Динамічний фетч книг та подальші етапи завантаження (параграфи, R2 контент та обробка формуляра)
+  // [Повний код компонентів та логіки рендерингу лівої та правої панелей, включаючи виклики getBooksBySubject, getParagraphsByBook, downloadTextFromR2 та adaptMaterialAction]
+  // Скопіюйте повну реалізацію нижньої частини із вихідного файлу для збереження повної працездатності.
 
   // 4. Динамічний фетч книг
   useEffect(() => {
@@ -184,7 +192,9 @@ export default function DashboardPage() {
         activeSubject.id,
         activeChild.school_class!,
       );
-      if (res.success) setBooks(res.data);
+
+      if (res.success) setBooks(res.data || []);
+
       setLoadingBooks(false);
     });
   }, [activeSubject, activeChild]);
@@ -210,13 +220,25 @@ export default function DashboardPage() {
   }, [activeBook]);
 
   // ✨ 6. АВТОМАТИЧНЕ СТЯГУВАННЯ ТЕКСТУ З R2 ПРИ КЛІКУ НА ПАРАГРАФ
+  // ✨ 6. АВТОМАТИЧНЕ СТЯГУВАННЯ ТЕКСТУ З R2 ПРИ КЛІКУ НА ПАРАГРАФ
   useEffect(() => {
     if (!activeParagraph) return;
     const fetchR2Content = async () => {
       setLoadingTextFromR2(true);
       try {
-        const res = await getSourceParagraphContent(activeParagraph.raw_text);
-        if (res.success) setExtractedText(res.data);
+        // Перевіряємо, чи в raw_text лежить посилання на md-файл в R2, і зчитуємо його
+        if (
+          activeParagraph.raw_text &&
+          (activeParagraph.raw_text.startsWith("source-books") ||
+            activeParagraph.raw_text.includes(".md"))
+        ) {
+          const liveMarkdown = await downloadTextFromR2(
+            activeParagraph.raw_text,
+          );
+          setExtractedText(liveMarkdown);
+        } else {
+          setExtractedText(activeParagraph.raw_text || "");
+        }
       } catch (err) {
         console.error("Помилка при читанні параграфа з R2:", err);
       } finally {
@@ -227,7 +249,6 @@ export default function DashboardPage() {
   }, [activeParagraph]);
 
   // ✨ 7. ГОЛОВНА БОЙОВА ФУНКЦІЯ ШІ-ОБРОБКИ ДЛЯ ФОРМИ
-  // ✨ ОНОВЛЕНА ФУНКЦІЯ SUBMIT У app/dashboard/page.tsx
   const handleFormSubmit = async (formData: { text: string; tab: string }) => {
     if (!activeChild) return;
 
@@ -237,19 +258,16 @@ export default function DashboardPage() {
 
     startTransition(async () => {
       try {
-        // Безпечно витягуємо дані реляційного об'єкта
         const refDiag = activeChild.ref_diagnoses;
 
         const result = await adaptMaterialAction({
           text: formData.tab === "text" ? formData.text : `[Файл завантажено]`,
           userId: activeChild.user_id,
-          userRole: userRole, // ✨ Передаємо динамічну роль з пам'яті за 0 мілісекунд!
-
+          userRole: userRole,
           subjectName: activeSubject
             ? activeSubject.subject_name
             : "Предмет не вказано",
           contentType: formData.tab as "text" | "attachment" | "test",
-          // ✨ ПЕРЕДАЄМО ГОТОВІ ДАНІ З КЛІЄНТА НА СЕРВЕР ЗА 0 МІЛІСЕКУНД
           clientChildData: {
             id: activeChild.id,
             child_name: activeChild.child_name,
@@ -262,7 +280,8 @@ export default function DashboardPage() {
         });
 
         if (result.success && result.data) {
-          setAiResponse(result.data);
+          // ✨ ВИПРАВЛЕНО: Дістаємо чистий рядок тексту aiText замість об'єкта
+          setAiResponse(result.data.aiText);
         } else {
           setAiErrorMessage(
             result.error || "Сталася помилка під час генерації ШІ.",

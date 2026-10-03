@@ -1,21 +1,23 @@
-// 📂 Шлях до файлу: app/utils/supabase/upload-helpers/pdf-parser.ts
 import { readPdfPages } from "pdf-text-reader";
-import { PutObjectCommand } from "@aws-sdk/client-s3";
-import { r2Client, R2_BUCKET_NAME } from "@/app/utils/r2/r2";
-import { ExtractedTitleMetadata } from "./types";
-import { parseMetadataFromFilename } from "./filename-parser"; // ✨ Викликаємо нашу нову функцію!
+
+// Оновлений чистий інтерфейс, який повертає тільки сирі дані підручника
+export interface ExtractedPdfTextMetadata {
+  title: string;
+  detectedClass: number | null;
+  detectedYear: number | null;
+  detectedSubject: string | null;
+}
 
 /**
- * 🛠️ КРОК 2: АКТ ТЕХНІЧНОГО ВИЛУЧЕННЯ МЕТАДАНИХ ТА ГЕНЕРАЦІЇ ОБКЛАДИНКИ
- * Охоплює 5 сторінок підручника. Якщо текст порожній — викликає окрему функцію аналізу назви!
+ * 🛠️ ЧИСТА ФУНКЦІЯ: Нативний витяг тексту з перших сторінок PDF
+ * Досліджує виключно внутрішній вміст документа та повертає знайдені маркери або null.
  */
 export async function parsePdfTitlePage(
   file: File,
-  fileHash: string,
-  expectedSubjectName: string,
-): Promise<ExtractedTitleMetadata> {
+  fileHash: string, // Залишено для збереження сигнатури виклику, якщо потрібно
+): Promise<ExtractedPdfTextMetadata> {
   console.log(
-    "⏳ [МОДУЛЬ ЗАВАНТАЖЕННЯ] Нативний витяг тексту 5 сторінок підручника...",
+    "⏳ [PDF PARSER] Чистий асинхронний витяг тексту з 5 сторінок прев'ю...",
   );
 
   const arrayBuffer = await file.arrayBuffer();
@@ -24,88 +26,61 @@ export async function parsePdfTitlePage(
   let titleText = "";
   try {
     const pages = await readPdfPages({ data: fileBuffer });
+    // Зчитуємо перші 5 сторінок (зріз від 0 до 5)
     titleText = pages
-      .slice(1, 5)
+      .slice(0, 5)
       .map((page) => page.lines.join(" "))
       .join("\n");
   } catch (err) {
-    console.log("⚠️ Не вдалося прочитати шар тексту на 2-5 сторінках.");
+    console.log("⚠️ Не вдалося прочитати внутрішній шар тексту всередині PDF.");
   }
 
   const titleLower = titleText.toLowerCase();
 
   let detectedClass: number | null = null;
-  let detectedYear = 1111;
-  let hasExpectedSubjectInContent = false;
+  let detectedYear: number | null = null;
+  let detectedSubject: string | null = null;
 
-  // Спочатку пробуємо знайти дані у тексті сторінок
+  // Шукаємо маркери в тексті, тільки якщо він реально розпарсився
   if (titleText.trim().length > 10) {
+    // 1. Чистий пошук класу в тексті сторінок
     const classMatch = titleText.match(/\b([1-9]|1[0-2])\s*клас/i);
-    if (classMatch && classMatch[1])
+    if (classMatch && classMatch[1]) {
       detectedClass = parseInt(classMatch[1], 10);
+    }
 
+    // 2. Чистий пошук року видання в тексті сторінок
     const preciseYearMatch = titleText.match(
       /(?:©|р\.|року|видавництво|затверджено)\s*\b(201\d|202\d|203\d)\b/i,
     );
-    if (preciseYearMatch && preciseYearMatch[1])
+    if (preciseYearMatch && preciseYearMatch[1]) {
       detectedYear = parseInt(preciseYearMatch[1], 10);
-  }
+    }
 
-  // ✨ ПІДСТРАХОВКА: Якщо текст порожній або регулярка схибила — викликаємо нашу окрему функцію назви файлу!
-  if (!detectedClass || detectedYear === 1111) {
-    const filenameMeta = parseMetadataFromFilename(
-      file.name,
-      expectedSubjectName,
-    );
-    if (!detectedClass) detectedClass = filenameMeta.detectedClass;
-    if (detectedYear === 1111) detectedYear = filenameMeta.detectedYear;
-    hasExpectedSubjectInContent = filenameMeta.hasSubjectMatch;
-  } else {
-    // Якщо текст усередині PDF був, робимо звичайну перевірку предмета по тексту
-    const chosenSubjectLower = expectedSubjectName.toLowerCase().trim();
+    // 3. 🌟 АВТОНОМНИЙ ПОШУК ПРЕДМЕТА: Перебираємо загальний словник дисциплін НУШ
     const subjectKeywords: Record<string, string[]> = {
-      "українська мова": ["українськ", "укр", "мова", "буквар", "читан"],
-      "українська література": ["література", "літ", "lit"],
-      математика: ["матем", "мат", "math"],
+      "Українська мова": ["українськ", "мова", "буквар", "читан"],
+      "Українська література": ["література", "укрліт"],
+      Математика: ["математика", "матем", "геометрія", "алгебра"],
+      "Я досліджую світ": ["досліджую світ", "я досліджую"],
+      "Англійська мова": ["english", "англійська"],
     };
-    const keywords = subjectKeywords[chosenSubjectLower] || [
-      chosenSubjectLower.substring(0, 4),
-    ];
-    hasExpectedSubjectInContent = keywords.some((keyword) =>
-      titleLower.includes(keyword),
-    );
+
+    for (const [subjectName, keywords] of Object.entries(subjectKeywords)) {
+      if (keywords.some((keyword) => titleLower.includes(keyword))) {
+        detectedSubject = subjectName;
+        break;
+      }
+    }
   }
 
-  // Захист від іноземців та укрліт для української мови
+  // Захист від укрліт або англійської, якщо тексти перемішалися (Твій оригінальний фільтр)
   if (
-    expectedSubjectName.toLowerCase().trim() === "українська мова" &&
+    detectedSubject === "Українська мова" &&
     (file.name.toLowerCase().includes("english") ||
       file.name.toLowerCase().includes("література"))
   ) {
-    hasExpectedSubjectInContent = false;
-  }
-
-  // Асинхронний експорт обкладинки сторінки 1 в PNG
-  let coverKey: string | null = null;
-  try {
-    const pdfImgConvert = require("pdf-img-convert");
-    const coverOutput = await pdfImgConvert.convert(fileBuffer, {
-      page_numbers: [1],
-      width: 450,
-    });
-    if (coverOutput && coverOutput.length > 0) {
-      coverKey = `book-covers/${fileHash}.png`;
-      await r2Client.send(
-        new PutObjectCommand({
-          Bucket: R2_BUCKET_NAME,
-          Key: coverKey,
-          Body: Buffer.from(coverOutput[0]),
-          ContentType: "image/png",
-        }),
-      );
-    }
-  } catch (err) {
-    console.log("⚠️ Обкладинка сторінки 1 не згенерована (Node Canvas).");
+    detectedSubject = null; // Повертаємо чистий null замість заглушки, даючи шанс назві файлу
   }
 
   const cleanBookTitle = file.name.replace(".pdf", "").replace(/[_-]/g, " ");
@@ -114,9 +89,6 @@ export async function parsePdfTitlePage(
     title: cleanBookTitle,
     detectedYear,
     detectedClass,
-    detectedSubject: hasExpectedSubjectInContent
-      ? expectedSubjectName
-      : "Невідповідний предмет",
-    coverKey,
+    detectedSubject, // Повертає реальний рядок предмета або null, якщо в тексті порожньо
   };
 }
