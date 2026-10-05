@@ -13,9 +13,8 @@ import { calculateFileSHA256 } from "@/app/utils/crypto";
 import {
   verifyBookMetadataAction, // Наш новий Етап 1 перевірок
   generatePresignedR2UrlAction, // Новий Етап 2 створення лінку R2
-  startLlamaParsingAction,
-  checkLlamaStatusAndCommitAction,
-} from "@/app/dashboard/actions";
+  checkLlamaStatusAndCommitAction, // Етап 4 опитування статусу черги ШІ
+} from "@/app/dashboard/upload/actions";
 
 import { BookData } from "@/app/utils/supabase/upload-helpers";
 
@@ -26,7 +25,7 @@ interface UploadBookModalProps {
   schoolClass: number;
   subjectId: string;
   programId: string | null;
-  onSuccess?: (newBook: BookData) => void; // ✨ ВИПРАВЛЕНО: Тепер типи ідеально збігаються з екшеном!
+  onSuccess?: (newBook: BookData) => void;
 }
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -104,83 +103,99 @@ export default function UploadBookModal({
     }, 1000);
 
     try {
-      // 1. Хешуємо великий файл для майбутньої перевірки на дублікати
+      // ========================================================
+      // 🛫 КРОК 1: ОБЧИСЛЕННЯ ХЕШУ ТА КЛІЄНТСЬКА НАРІЗКА ПРЕВ'Ю (ПЕРШІ 5 СТОРІНОК)
+      // ========================================================
       setLoadingStage("Вирахування цифрового відбитку файлу (SHA-256)...");
       const computedHash = await calculateFileSHA256(file);
       setFileHash(computedHash);
 
-      // 2. Нарізаємо легке прев'ю на клієнті, щоб захистити сервер від RAM-крашу
       setLoadingStage(
         "Створення полегшеного прев'ю для верифікації структури...",
       );
       const { PDFDocument } = await import("pdf-lib");
       const fileArrayBuffer = await file.arrayBuffer();
+
+      // 1. Завантажуємо оригінальний документ
       const srcDoc = await PDFDocument.load(fileArrayBuffer);
-      const previewDoc = await PDFDocument.create();
 
-      const pagesToCopy = Math.min(5, srcDoc.getPageCount());
-      const pageIndices = Array.from({ length: pagesToCopy }, (_, i) => i);
-      const copiedPages = await previewDoc.copyPages(srcDoc, pageIndices);
+      // 2. Видаляємо всі сторінки, починаючи з 5-ї (індекс 5 — це 6-та сторінка)
+      // Видаляємо з кінця до початку, щоб індекси не зсувалися в процесі
+      const pageCount = srcDoc.getPageCount();
+      if (pageCount > 5) {
+        for (let i = pageCount - 1; i >= 5; i--) {
+          srcDoc.removePage(i);
+        }
+      }
 
-      copiedPages.forEach((page: any) => previewDoc.addPage(page));
+      // 3. Зберігаємо змінений ОРИГІНАЛЬНИЙ документ (шрифти та XREF залишаться цілими)
+      const previewBytes = await srcDoc.save();
 
-      const previewBytes = await previewDoc.save();
-
-      // Конвертуємо Uint8Array у Buffer для 100% сумісності з типами BlobPart
-      const miniPreviewBlob = new Blob([Buffer.from(previewBytes)], {
+      // 4. Створюємо File без костилів типів
+      const miniPreviewBlob = new Blob([new Uint8Array(previewBytes)], {
         type: "application/pdf",
       });
-      const miniPreviewFile = new File([miniPreviewBlob], "mini-preview.pdf", {
+
+      const miniPreviewFile = new File([miniPreviewBlob], file.name, {
         type: "application/pdf",
       });
 
-      // 3. Пакуємо payload та викликаємо ЕТАП 1: Ізольований ланцюжок перевірок НУШ
+      // ========================================================
+      // 🛡️ 🔥 КРОК 2: ОДРАЗУ ЙДЕМО НА РОУТ ДЛЯ СЕРВЕРНИХ ПЕРЕВІРОК ТА ХЕШУ
+      // ========================================================
       setLoadingStage(
-        "Перевірка освітньої програми, дисципліни та наявності в базі...",
+        "Запуск крос-валідації метаданих та перевірка дублікатів у базі...",
       );
-      const startPayload = new FormData();
-      startPayload.append("file", miniPreviewFile);
-      startPayload.append("originalName", file.name); // Справжнє ім'я оригінальної книги
-      startPayload.append("fileHash", computedHash);
-      startPayload.append("subjectId", subjectId);
-      startPayload.append("schoolClass", String(schoolClass));
-      startPayload.append("subjectName", subjectName);
-      if (programId) startPayload.append("programId", programId);
 
-      // Викликаємо наш новий розділений екшен (Ламу та R2 тут не чіпаємо!)
-      const startRes = await verifyBookMetadataAction(startPayload);
+      const routePayload = new FormData();
+      routePayload.append("file", miniPreviewFile); // Шлемо тільки 5 сторінок прев'ю для датчиків
+      routePayload.append("originalName", file.name);
+      routePayload.append("fileHash", computedHash);
+      routePayload.append("subjectId", subjectId);
+      routePayload.append("schoolClass", String(schoolClass)); // Стейт класу з модалки
+      routePayload.append("subjectName", subjectName); // Стейт предмету з модалки
+      if (programId) routePayload.append("programId", programId);
 
-      if (!startRes || !startRes.success) {
+      // Викликаємо твій монолітний бойовий роут
+      const routeResponse = await fetch("/dashboard/upload", {
+        method: "POST",
+        body: routePayload,
+      });
+
+      if (!routeResponse.ok) {
+        const errorData = await routeResponse.json();
         throw new Error(
-          startRes?.error || "Файл не пройшов серверні валідації НУШ.",
+          errorData.error || "Файл не пройшов серверний контроль метаданих.",
         );
       }
 
-      // Обробка дубліката (Книга вже є в базі — миттєво підключаємо й виходимо)
-      if (startRes.status === "DUPLICATE") {
+      const routeResult = await routeResponse.json();
+
+      // 🎯 ОБРОБКА РОЗУМНОГО ДУБЛІКАТА: Зупиняємося ТУТ! В R2 нічого даремно не пишеться!
+      if (routeResult.status === "DUPLICATE") {
         clearInterval(timerInterval);
         setLoadingStage(
-          `💡 Підручник "${startRes.data?.title || "Обраний файл"}" знайдено в системі! Миттєво підключаємо...`,
+          `💡 Цей підручник вже є в системі! Миттєво підключаємо його до кабінету програми...`,
         );
-        await delay(2500);
 
-        if (onSuccess && startRes.data) onSuccess(startRes.data);
-        onClose();
+        setTimeout(() => {
+          if (onSuccess && routeResult.data) onSuccess(routeResult.data);
+          setIsPending(false);
+          setFile(null);
+          onClose();
+        }, 5000); // Твій рідний 5-секундний таймер успіху перед закриттям
         return;
       }
 
-      // 4. ЕТАП 2: Якщо валідація успішна — генеруємо токен прямого завантаження Cloudflare R2
-      if (startRes.status !== "VALIDATED") {
-        throw new Error(
-          "Неочікуваний статус відповіді сервера після валідації.",
-        );
-      }
-
+      // ========================================================
+      // 🛫 🔥 КРОК 3: КНИГА НОВА ТА СХВАЛЕНА СЕРВЕРОМ. ТІЛЬКИ ТЕПЕР ЙДЕМО В R2
+      // ========================================================
       setLoadingStage(
-        "Контроль пройдено успішно. Генерація токену доступу хмари R2...",
+        "Книга перевірена. Отримання токену хмари Cloudflare R2...",
       );
       const r2TokenRes = await generatePresignedR2UrlAction(
-        startRes.fileName || file.name,
+        file.name,
+        computedHash,
       );
 
       if (
@@ -191,23 +206,21 @@ export default function UploadBookModal({
       ) {
         throw new Error(
           r2TokenRes?.error ||
-            "Не вдалося згенерувати параметри доступу до хмари.",
+            "Не вдалося згенерувати токен доступу до сховища R2.",
         );
       }
 
       const { uploadUrl, fileKey } = r2TokenRes;
-      const detectedYear = startRes.detectedYear || new Date().getFullYear();
 
-      // 5. Пряме клієнтське завантаження оригінального важкого файлу в Cloudflare R2 повз Next.js
       setLoadingStage(
-        "Пряме безпечне завантаження книги в Cloudflare R2 (0MB RAM сервера)...",
+        "Пряме безпечне завантаження оригінальної книги в Cloudflare R2...",
       );
       const r2UploadResponse = await fetch(uploadUrl, {
         method: "PUT",
         headers: {
           "Content-Type": "application/pdf",
         },
-        body: file, // Оригінальний великий файл летить напряму з браузера
+        body: file, // Важкий бінарник (41МБ+) летить в інтернет тільки тепер!
       });
 
       if (!r2UploadResponse.ok) {
@@ -216,53 +229,57 @@ export default function UploadBookModal({
         );
       }
 
-      // Формуємо публічний домен твого R2 сховища
-      const r2PublicDomain =
-        process.env.NEXT_PUBLIC_R2_PUBLIC_DOMAIN ||
-        "https://your-r2-public-domain.com";
-      const r2PublicUrl = `${r2PublicDomain}/${fileKey}`;
+      // ========================================================
+      // 🚀 🔥 КРОК 4: РЕЄСТРАЦІЯ ГОТОВОГО КЛЮЧА R2 В ЧЕРГУ ЛАМИ (БЕЗ ПЕРЕВІРОК!)
+      // ========================================================
+      setLoadingStage("Реєстрація файлу в чергу парсингу ШІ Llama Cloud...");
 
-      // 6. ЕТАП 3: Запуск асинхронного аналізу в LlamaParse через Server Action
-      setLoadingStage("Реєстрація завдання в системі аналізу ШІ...");
+      const registerPayload = new FormData();
+      registerPayload.append("originalName", file.name);
+      registerPayload.append("fileHash", computedHash);
+      registerPayload.append("fileKey", fileKey); // Прокидаємо завантажений ключ
 
-      const parseTriggerRes = (await startLlamaParsingAction(
-        r2PublicUrl,
-        file.name,
-      )) as { success: boolean; jobId?: string; error?: string };
+      const registerResponse = await fetch("/dashboard/upload", {
+        method: "POST",
+        body: registerPayload,
+      });
 
-      if (
-        !parseTriggerRes ||
-        !parseTriggerRes.success ||
-        !parseTriggerRes.jobId
-      ) {
+      if (!registerResponse.ok) {
+        const errorData = await registerResponse.json();
         throw new Error(
-          parseTriggerRes?.error ||
-            "Не вдалося ініціювати аналіз книги через ШІ.",
+          errorData.error || "Помилка передачі лінку до ШІ роуту.",
         );
       }
 
-      const jobId: string = parseTriggerRes.jobId;
+      const registerResult = await registerResponse.json();
 
-      // 7. ЕТАП 4: Асинхронний цикл опитування черги ШІ
+      if (!registerResult.llamaFileId) {
+        throw new Error(
+          "Сервер не повернув унікальний ідентифікатор завдання парсингу ШІ.",
+        );
+      }
+
+      const jobId = registerResult.llamaFileId;
+      const detectedYear = routeResult.detectedYear;
+
+      // ========================================================
+      // 🔄 КРОК 5: АСИНХРОННИЙ ЦИКЛ ОПИТУВАННЯ ЧЕРГИ ШІ ТА КОММІТ В БД
+      // ========================================================
       let isFinished = false;
       let attempts = 0;
 
       while (!isFinished) {
-        if (attempts >= 90) {
-          // Ліміт ~7.5 хвилин на велику книгу
+        attempts++;
+        if (attempts > 300) {
           throw new Error(
-            "Перевищено ліміт часу очікування ШІ. Будь ласка, спробуйте пізніше.",
+            "Перевищено ліміт часу очікування обробки підручника ШІ (25 хвилин).",
           );
         }
 
         setLoadingStage(
-          `ШІ аналізує сторінки книги (очікування: ${secondsElapsed}с)...`,
+          `🤖 Нейромережа Llama Cloud аналізує сторінки підручника... (Етап: ${attempts})`,
         );
 
-        await delay(5000);
-        attempts++;
-
-        // Опитуємо четвертий Server Action перевірки статусу та фінального комміту в БД
         const checkRes = await checkLlamaStatusAndCommitAction({
           jobId,
           fileHash: computedHash,
@@ -274,31 +291,36 @@ export default function UploadBookModal({
           fileKey: fileKey,
         });
 
-        if (!checkRes || !checkRes.success) {
+        if (!checkRes.success) {
           throw new Error(
-            checkRes?.error || "Збій під час обробки підручника на сервері.",
+            checkRes.error ||
+              "Збій під час асинхронного комміту параграфів підручника.",
           );
         }
 
-        if (checkRes.status === "COMPLETED") {
+        if (checkRes.status === "PENDING") {
+          await delay(5000);
+        } else if (checkRes.status === "COMPLETED") {
           isFinished = true;
           clearInterval(timerInterval);
-          setLoadingStage("🎉 Книгу успішно оцифровано та збережено!");
-          await delay(1500);
+          setLoadingStage(
+            "🎉 Підручник успішно розпарсено, розділено на параграфи та збережено!",
+          );
+          await delay(2000);
 
           if (onSuccess && checkRes.data) onSuccess(checkRes.data);
+          setIsPending(false);
+          setFile(null);
           onClose();
-          return;
         }
       }
-    } catch (serverErr: any) {
+    } catch (error: any) {
       clearInterval(timerInterval);
-      setErrorMessage(
-        serverErr.message || "Сталася помилка обробки підручника.",
-      );
-    } finally {
       setIsPending(false);
-      setLoadingStage("");
+      setErrorMessage(
+        error.message || "Сталася невідома помилка під час обробки підручника.",
+      );
+      console.error("❌ [КРИТИЧНА ПОМИЛКА МОДАЛКИ]:", error);
     }
   };
 
