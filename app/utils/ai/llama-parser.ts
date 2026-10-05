@@ -1,9 +1,11 @@
-import { LlamaCloud } from "@llamaindex/llama-cloud";
+// app/utils/ai/llama-parser.ts
+import LlamaCloud from "@llamaindex/llama-cloud";
+import fs from "fs";
+import path from "path";
+import os from "os";
 
-// Ініціалізуємо офіційний клієнт строго для Етапу 2 (перевірки статусу черги)
-const llamaClient = new LlamaCloud({
-  apiKey: process.env.LLAMA_CLOUD_API_KEY || "",
-});
+// Ініціалізуємо офіційний клієнт (автоматично читає LLAMA_CLOUD_API_KEY з .env)
+const client = new LlamaCloud();
 
 export interface LlamaJobResult {
   success: boolean;
@@ -12,81 +14,75 @@ export interface LlamaJobResult {
 }
 
 /**
- * 🚀 ШІ-ХЕЛПЕР 1: Реєстрація завдання парсингу за URL з Cloudflare R2
- * ✨ НАДІЙНО ТА ЧИСТО: Обходимо ліміти форми за допомогою офіційного ендпоінту /parsing/jobs,
- * який створений спеціально під вхідні JSON-пакети інтернет-посилань великих файлів!
+ * 🚀 ШІ-ХЕЛПЕР 1: Завантаження фізичного підручника до Llama Cloud через канонічний ReadStream
+ * ✨ ОФІЦІЙНО: Використовує fs.createReadStream точно за твоєю документацією Llama Cloud!
  */
 export async function uploadBookToLlamaCloudViaUrl(
-  fileUrl: string,
+  fileBuffer: Buffer,
   fileName: string,
 ): Promise<LlamaJobResult> {
-  console.log("\n=======================================================");
-  console.log(
-    `📡 [LLAMA-PARSER] Асинхронний запуск великого файлу через серверний JSON`,
-  );
-  console.log(`🔗 URL файлу в R2: ${fileUrl}`);
-  console.log(`📦 Назва файлу: ${fileName}`);
-  console.log("=======================================================");
+  let tempFilePath = "";
 
   try {
-    if (!process.env.LLAMA_CLOUD_API_KEY) {
-      throw new Error("LLAMA_CLOUD_API_KEY відсутній у змінних оточення.");
-    }
+    console.log(
+      `📡 [LLAMA-PARSER] Створення тимчасового файлу для підпису метаданих: ${fileName}`,
+    );
 
-    // 🌟 ОФІЦІЙНИЙ МАРШРУТ REST API ДЛЯ СТВОРЕННЯ ЗАВДАНЬ ПО URL
-    // Лама сама, своїми фоновими потоками скачає твої 41+ МБ з R2, оминаючи ліміти форми!
-    const response = await fetch("https://llamaindex.ai", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.LLAMA_CLOUD_API_KEY}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify({
-        url: fileUrl, // Передаємо наше чисте інтернет-посилання
-        name: fileName,
-        parsing_options: {
-          language: "uk", // Додаткова оптимізація під український текст
-        },
-      }),
+    // 1. Створюємо безпечний тимчасовий шлях у системній папці операційної системи (/tmp)
+    const tempDir = os.tmpdir();
+    tempFilePath = path.join(tempDir, `${Date.now()}-${fileName}`);
+
+    // 2. На одну секунду записуємо байти з R2 на диск сервера
+    fs.writeFileSync(tempFilePath, fileBuffer);
+
+    console.log(
+      "📡 [LLAMA-PARSER] Створення канонічного ReadStream та надсилання до Llama Cloud...",
+    );
+
+    // 3. 🔥 ПЕРЕДАЄМО СТРІМ — ТОЧНІСІНЬКО ЯК У ТВОЇХ ДОКАХ!
+    // Завдяки цьому Лама отримає легітимне ім'я файлу, розширення .pdf і не впаде за таймаутом.
+    const uploadResult = await client.files.create({
+      file: fs.createReadStream(tempFilePath),
+      purpose: "parse",
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Llama Cloud REST API Error: ${errorText}`);
+    if (!uploadResult || !uploadResult.id) {
+      throw new Error("Llama Cloud SDK не повернув унікальний ID файлу.");
     }
 
-    const data = await response.json();
-
-    // Офіційне REST API для Jobs повертает ідентифікатор у полі data.id або data.job_id
-    const finalJobId = data.id || data.job_id;
-
-    if (!finalJobId) {
-      throw new Error(
-        "LlamaCloud не повернув унікальний токен завдання (job id).",
-      );
-    }
-
-    console.log("-------------------------------------------------------");
     console.log(
-      `✅ [LLAMA-PARSER УСПІХ] Фонове завдання для великого файлу зареєстровано!`,
+      `✅ [LLAMA-PARSER УСПІХ] Файл успішно прийнято Ламою. ID: ${uploadResult.id}`,
     );
-    console.log(`🚀 [LAMA JOB ID]: ${finalJobId}`);
-    console.log("-------------------------------------------------------\n");
 
-    return { success: true, jobId: finalJobId };
+    // 4. Миттєво видаляємо тимчасовий файл за собою, щоб не засмічувати пам'ять сервера
+    if (fs.existsSync(tempFilePath)) {
+      fs.unlinkSync(tempFilePath);
+    }
+
+    return {
+      success: true,
+      jobId: uploadResult.id,
+    };
   } catch (error: any) {
-    console.error("❌ [LLAMA-PARSER КРИТИЧНА ПОМИЛКА]:", error.message);
-    return { success: false, error: error.message };
+    // Якщо сталася помилка, все одно гарантовано підчищаємо диск
+    if (tempFilePath && fs.existsSync(tempFilePath)) {
+      fs.unlinkSync(tempFilePath);
+    }
+    console.error("❌ [LLAMA-PARSER CRITICAL ERROR]:", error.message);
+    return {
+      success: false,
+      error:
+        error.message || "Помилка завантаження файлу через Llama Cloud SDK.",
+    };
   }
 }
 
 /**
- * 🚀 ШІ-ХЕЛПЕР 2: Перевірка статусу та отримання результату (Твій рідний код із доків)
+ * 🚀 ШІ-ХЕЛПЕР 2: Перевірка статусу черги та отримання результату
  */
 export async function getLlamaParsingResult(jobId: string) {
   try {
-    const result = await llamaClient.parsing.parse({
+    const result = await client.parsing.parse({
       file_id: jobId,
       tier: "agentic",
       version: "latest",
