@@ -48,22 +48,27 @@ export async function POST(request: NextRequest) {
     // ========================================================
     if (clientFileKey) {
       console.log(
-        "⏳ [РОУТ 🚀] Етап 2: Транзит перевіреного оригінального файлу з R2 в ШІ Llama Cloud...",
+        "⏳ [РОУТ 🚀] Етап 2: Швидка реєстрація оригінального файлу з R2 в ШІ Llama Cloud...",
       );
       const r2PublicDomain =
         process.env.NEXT_PUBLIC_R2_PUBLIC_DOMAIN ||
         `https://pub-${process.env.R2_ACCOUNT_ID}.r2.dev`;
       const r2PublicUrl = `${r2PublicDomain}/${clientFileKey}`;
 
-      console.log(`🔗 Стягуємо байти для ШІ: ${r2PublicUrl}`);
-      const r2Response = await fetch(r2PublicUrl);
+      console.log(`🔗 Стягуємо байти для ШІ (без кешування): ${r2PublicUrl}`);
+      const r2Response = await fetch(r2PublicUrl, { cache: "no-store" });
+
       if (!r2Response.ok)
         throw new Error(
           `Не вдалося прочитати оригінал з R2 за ключем ${clientFileKey}.`,
         );
 
       const arrayBuffer = await r2Response.arrayBuffer();
-      const nodeBuffer = Buffer.from(arrayBuffer);
+      const nodeBuffer = Buffer.from(new Uint8Array(arrayBuffer));
+
+      console.log(
+        "📦 Чистий Buffer створено. Надсилання бінарного потоку в Ламу...",
+      );
 
       const llamaResult = await uploadBookToLlamaCloudViaUrl(
         nodeBuffer,
@@ -78,6 +83,10 @@ export async function POST(request: NextRequest) {
       console.log(
         `✅ [УСПІХ ШІ] Завдання зареєстровано! LAMA JOB ID: ${llamaResult.jobId}`,
       );
+
+      // 🎯 МИТТЄВА НЕБЛОКУЮЧА ВІДПОВІДЬ:
+      // Повертаємо PROCESSING за 1 секунду. Клієнтська модалка запустить свій while,
+      // а браузер ніколи більше не впаде по таймауту!
       return NextResponse.json({
         success: true,
         status: "PROCESSING",
@@ -103,12 +112,6 @@ export async function POST(request: NextRequest) {
     const fromFilename = parseMetadataFromFilename(originalName);
     console.log("fromFilename", fromFilename);
 
-    // --------------------------------------------------------
-    // 🎚️ ЕТАП 2: ЗАЛІЗОБЕТОННЕ ЗЧИТУВАННЯ ТЕКСТУ ПРЕВ'Ю PDF
-    // --------------------------------------------------------
-    // --------------------------------------------------------
-    // 🎚️ ЕТАП 2: ЗАЛІЗОБЕТОННЕ ЗЧИТУВАННЯ ТЕКСТУ ПРЕВ'Ю PDF
-    // --------------------------------------------------------
     console.log(
       `[РОУТ 🔍] Крок 2. Чистий витяг тексту з перших сторінок прев'ю...`,
     );
@@ -116,15 +119,12 @@ export async function POST(request: NextRequest) {
     const clientArrayBuffer = await miniPreviewFile.arrayBuffer();
     const serverNodeBuffer = Buffer.from(clientArrayBuffer);
 
-    // 🔥 ГЕНІАЛЬНЕ ВИПРАВЛЕННЯ: Передаємо реальну оригінальну назву книги (наприклад, "1.pdf" чи "english-5.pdf")
-    // Завдяки цьому фільтр захисту всередині parsePdfTitlePage знову почне працювати на 100%!
+    // Передаємо реальну оригінальну назву книги для правильної роботи фільтрів захисту
     const safeServerFile = new File([serverNodeBuffer], originalName, {
       type: "application/pdf",
     });
 
-    // 🔥 ОНОВЛЕНО: Передаємо у датчик саме наш безпечний safeServerFile з оригінальним ім'ям!
     const fromContent = await parsePdfTitlePage(safeServerFile, fileHash);
-
     console.log(`fromContent`, fromContent);
 
     console.log(
@@ -209,7 +209,7 @@ export async function POST(request: NextRequest) {
       error.message?.includes("Помилка") ||
       error.message?.includes("відповідності");
     return NextResponse.json(
-      { success: false, error: error.message || "Помилка обробки на сервері." },
+      { success: false, error: error.message || "Помилка обробки на serveri." },
       { status: isValidationError ? 422 : 500 },
     );
   }

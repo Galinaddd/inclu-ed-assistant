@@ -17,7 +17,8 @@ export function slugify(text: string): string {
 
 /**
  * 📁 ГЕНЕРАТОР КЛЮЧІВ ДЛЯ ОРИГІНАЛЬНИХ ПАРАГРАФІВ (ПЕРШОДЖЕРЕЛА)
- * Формує шлях: source-books/[program_id]/[class]/[subject_id]/[author_year]/paragraph_[num].txt
+ * 🔥 ОНОВЛЕНО: Тепер збирає структуру всередині нашої нової папки books/content/
+ * Формує шлях: books/content/[program_id]/[class]/[subject_id]/[author_year]/paragraphs/paragraph_[num].txt
  */
 export function generateSourceKey(params: {
   programId: string;
@@ -28,12 +29,13 @@ export function generateSourceKey(params: {
   paragraphNumber: string;
 }): string {
   const cleanAuthor = slugify(params.author);
-  return `source-books/${params.programId}/${params.schoolClass}/${params.subjectId}/${cleanAuthor}_${params.year}/paragraph_${params.paragraphNumber}.txt`;
+  return `books/content/${params.programId}/${params.schoolClass}/${params.subjectId}/${cleanAuthor}_${params.year}/paragraphs/paragraph_${params.paragraphNumber}.txt`;
 }
 
 /**
  * 📁 ГЕНЕРАТОР КЛЮЧІВ ДЛЯ АДАПТОВАНИХ ШІ-МАТЕРІАЛІВ
- * Формує шлях: adapted-materials/[program_id]/[class]/[subject_id]/[author_year]/paragraph_[num]_level_[lvl]_[diagnosis].txt
+ * 🔥 ОНОВЛЕНО: Зберігає кеш готових адаптацій підручника поруч із оригіналом в books/content/
+ * Формує шлях: books/content/[program_id]/[class]/[subject_id]/[author_year]/adapted/paragraph_[num]_level_[lvl]_[diagnosis].txt
  */
 export function generateAdaptedKey(params: {
   programId: string;
@@ -47,17 +49,32 @@ export function generateAdaptedKey(params: {
 }): string {
   const cleanAuthor = slugify(params.author);
   const cleanDiagnosis = slugify(params.targetDiagnosis);
-  return `adapted-materials/${params.programId}/${params.schoolClass}/${params.subjectId}/${cleanAuthor}_${params.year}/paragraph_${params.paragraphNumber}_level_${params.targetSupportLevel}_${cleanDiagnosis}.txt`;
+  return `books/content/${params.programId}/${params.schoolClass}/${params.subjectId}/${cleanAuthor}_${params.year}/adapted/paragraph_${params.paragraphNumber}_level_${params.targetSupportLevel}_${cleanDiagnosis}.txt`;
 }
 
 /**
- * 📁 ГЕНЕРАТОР ПЕРСОНАЛЬНИХ КЛЮЧІВ ДЛЯ КОНКРЕТНОЇ ДИТИНИ
- * Формує ізольований шлях: personal-materials/[user_id]/[child_id]/[uuid].txt
+ * 📁 ГЕНЕРАТОР ПЕРСОНАЛЬНИХ КЛЮЧІВ ДЛЯ КОНКРЕТНОЇ ДИТИНИ (БАТЬКІВСЬКІ МАТЕРІАЛІ)
+ * 🔥 ОНОВЛЕНО: Переспрямовано у нову глобальну папку personal/images/
+ * Формує ізольований шлях: personal/images/[user_id]/[child_id]/[uuid].png
  */
 export function generatePersonalKey(params: {
   userId: string;
   childId: string;
   adaptationUuid: string;
 }): string {
-  return `personal-materials/${params.userId}/${params.childId}/${params.adaptationUuid}.txt`;
+  // За замовчуванням ставимо .png, оскільки батьки найчастіше надсилатимуть фото з телефону
+  return `personal/images/${params.userId}/${params.childId}/${params.adaptationUuid}.png`;
+}
+
+/**
+ * 📁 ГЕНЕРАТОР КЛЮЧІВ ДЛЯ ФІНАЛЬНИХ ПЕРСОНАЛЬНИХ АДАПТАЦІЙ БАТЬКІВ (ЗБЕРІГАЄМО ДО КІНЦЯ НАВЧАЛЬНОГО РОКУ)
+ * 🔥 НОВИЙ МЕТОД: Формує ізольований шлях для готового адаптованого тексту домашки
+ * Формує шлях: personal/adapted/[user_id]/[child_id]/[uuid].txt
+ */
+export function generatePersonalAdaptedKey(params: {
+  userId: string;
+  childId: string;
+  adaptationUuid: string;
+}): string {
+  return `personal/adapted/${params.userId}/${params.childId}/${params.adaptationUuid}.txt`;
 }

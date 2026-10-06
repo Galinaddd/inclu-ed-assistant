@@ -21,6 +21,9 @@ export async function parsePdfTitlePage(
 
   let titleText = "";
   try {
+    if (typeof global !== "undefined" && !(global as any).DOMMatrix) {
+      (global as any).DOMMatrix = class {};
+    }
     const pdfImport = require("pdf-parse");
     const pdf = typeof pdfImport === "function" ? pdfImport : pdfImport.default;
 

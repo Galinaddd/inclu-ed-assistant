@@ -116,11 +116,7 @@ export default function UploadBookModal({
       const { PDFDocument } = await import("pdf-lib");
       const fileArrayBuffer = await file.arrayBuffer();
 
-      // 1. Завантажуємо оригінальний документ
       const srcDoc = await PDFDocument.load(fileArrayBuffer);
-
-      // 2. Видаляємо всі сторінки, починаючи з 5-ї (індекс 5 — це 6-та сторінка)
-      // Видаляємо з кінця до початку, щоб індекси не зсувалися в процесі
       const pageCount = srcDoc.getPageCount();
       if (pageCount > 5) {
         for (let i = pageCount - 1; i >= 5; i--) {
@@ -128,35 +124,30 @@ export default function UploadBookModal({
         }
       }
 
-      // 3. Зберігаємо змінений ОРИГІНАЛЬНИЙ документ (шрифти та XREF залишаться цілими)
       const previewBytes = await srcDoc.save();
-
-      // 4. Створюємо File без костилів типів
       const miniPreviewBlob = new Blob([new Uint8Array(previewBytes)], {
         type: "application/pdf",
       });
-
       const miniPreviewFile = new File([miniPreviewBlob], file.name, {
         type: "application/pdf",
       });
 
       // ========================================================
-      // 🛡️ 🔥 КРОК 2: ОДРАЗУ ЙДЕМО НА РОУТ ДЛЯ СЕРВЕРНИХ ПЕРЕВІРОК ТА ХЕШУ
+      // 🛡️ 🔥 КРОК 2: СУВOРА ВАЛІДАЦІЯ ПРЕВ'Ю НА РОУТІ (БЕЗ ВЕЛИКОГО ФАЙЛУ)
       // ========================================================
       setLoadingStage(
         "Запуск крос-валідації метаданих та перевірка дублікатів у базі...",
       );
 
       const routePayload = new FormData();
-      routePayload.append("file", miniPreviewFile); // Шлемо тільки 5 сторінок прев'ю для датчиків
+      routePayload.append("file", miniPreviewFile); // Тільки 5 сторінок!
       routePayload.append("originalName", file.name);
       routePayload.append("fileHash", computedHash);
       routePayload.append("subjectId", subjectId);
-      routePayload.append("schoolClass", String(schoolClass)); // Стейт класу з модалки
-      routePayload.append("subjectName", subjectName); // Стейт предмету з модалки
+      routePayload.append("schoolClass", String(schoolClass));
+      routePayload.append("subjectName", subjectName);
       if (programId) routePayload.append("programId", programId);
 
-      // Викликаємо твій монолітний бойовий роут
       const routeResponse = await fetch("/dashboard/upload", {
         method: "POST",
         body: routePayload,
@@ -171,24 +162,22 @@ export default function UploadBookModal({
 
       const routeResult = await routeResponse.json();
 
-      // 🎯 ОБРОБКА РОЗУМНОГО ДУБЛІКАТА: Зупиняємося ТУТ! В R2 нічого даремно не пишеться!
       if (routeResult.status === "DUPLICATE") {
         clearInterval(timerInterval);
         setLoadingStage(
           `💡 Цей підручник вже є в системі! Миттєво підключаємо його до кабінету програми...`,
         );
-
         setTimeout(() => {
           if (onSuccess && routeResult.data) onSuccess(routeResult.data);
           setIsPending(false);
           setFile(null);
           onClose();
-        }, 5000); // Твій рідний 5-секундний таймер успіху перед закриттям
+        }, 5000);
         return;
       }
 
       // ========================================================
-      // 🛫 🔥 КРОК 3: КНИГА НОВА ТА СХВАЛЕНА СЕРВЕРОМ. ТІЛЬКИ ТЕПЕР ЙДЕМО В R2
+      // 🛫 🔥 КРОК 3: КНИГА СХВАЛЕНА. ТІЛЬКИ ТЕПЕР ЙДЕМО В CLOUDFLARE R2
       // ========================================================
       setLoadingStage(
         "Книга перевірена. Отримання токену хмари Cloudflare R2...",
@@ -217,10 +206,8 @@ export default function UploadBookModal({
       );
       const r2UploadResponse = await fetch(uploadUrl, {
         method: "PUT",
-        headers: {
-          "Content-Type": "application/pdf",
-        },
-        body: file, // Важкий бінарник (41МБ+) летить в інтернет тільки тепер!
+        headers: { "Content-Type": "application/pdf" },
+        body: file, // Важкий бінарник (41МБ+) летить в R2 прямо з браузера!
       });
 
       if (!r2UploadResponse.ok) {
@@ -230,18 +217,18 @@ export default function UploadBookModal({
       }
 
       // ========================================================
-      // 🚀 🔥 КРОК 4: РЕЄСТРАЦІЯ ГОТОВОГО КЛЮЧА R2 В ЧЕРГУ ЛАМИ (БЕЗ ПЕРЕВІРОК!)
+      // 🚀 🔥 КРОК 4: РЕЄСТРАЦІЯ FILE_KEY В ЛАМУ (БЕЗ ВАЖКОГО ФАЙЛУ!)
       // ========================================================
       setLoadingStage("Реєстрація файлу в чергу парсингу ШІ Llama Cloud...");
 
       const registerPayload = new FormData();
       registerPayload.append("originalName", file.name);
       registerPayload.append("fileHash", computedHash);
-      registerPayload.append("fileKey", fileKey); // Прокидаємо завантажений ключ
+      registerPayload.append("fileKey", fileKey); // 🌟 ФІКС: Передаємо тільки легкий рядок-ключ R2!
 
       const registerResponse = await fetch("/dashboard/upload", {
         method: "POST",
-        body: registerPayload,
+        body: registerPayload, // Легкий fetch, який долітає миттєво
       });
 
       if (!registerResponse.ok) {
@@ -260,7 +247,7 @@ export default function UploadBookModal({
       }
 
       const jobId = registerResult.llamaFileId;
-      const detectedYear = routeResult.detectedYear;
+      const detectedYear = routeResult.detectedYear || new Date().getFullYear();
 
       // ========================================================
       // 🔄 КРОК 5: АСИНХРОННИЙ ЦИКЛ ОПИТУВАННЯ ЧЕРГИ ШІ ТА КОММІТ В БД
@@ -299,13 +286,18 @@ export default function UploadBookModal({
         }
 
         if (checkRes.status === "PENDING") {
-          await delay(5000);
+          const delay = (ms: number) =>
+            new Promise((res) => setTimeout(res, ms));
+          await delay(5000); // Чекаємо 5 секунд і йдемо на нове коло перевірки
         } else if (checkRes.status === "COMPLETED") {
           isFinished = true;
           clearInterval(timerInterval);
           setLoadingStage(
             "🎉 Підручник успішно розпарсено, розділено на параграфи та збережено!",
           );
+
+          const delay = (ms: number) =>
+            new Promise((res) => setTimeout(res, ms));
           await delay(2000);
 
           if (onSuccess && checkRes.data) onSuccess(checkRes.data);
