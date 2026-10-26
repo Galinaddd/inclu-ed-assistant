@@ -1,10 +1,6 @@
-// app/utils/ai/llama-parser.ts
+// 📂 Шлях до файлу: app/utils/ai/llama-parser.ts
 import LlamaCloud from "@llamaindex/llama-cloud";
-import fs from "fs";
-import path from "path";
-import os from "os";
 
-// Ініціалізуємо офіційний клієнт (автоматично читає LLAMA_CLOUD_API_KEY з .env)
 const client = new LlamaCloud();
 
 export interface LlamaJobResult {
@@ -14,84 +10,48 @@ export interface LlamaJobResult {
 }
 
 /**
- * 🚀 ШІ-ХЕЛПЕР 1: Завантаження фізичного підручника до Llama Cloud через канонічний ReadStream
- * ✨ ОФІЦІЙНО: Використовує fs.createReadStream точно за твоєю документацією Llama Cloud!
+ * 🛫 КРОК 1: Ініціалізація асинхронного парсингу в хмарі Llama Cloud
  */
 export async function uploadBookToLlamaCloudViaUrl(
-  fileBuffer: Buffer,
+  publicR2Url: string,
   fileName: string,
 ): Promise<LlamaJobResult> {
-  let tempFilePath = "";
-
   try {
-    console.log(
-      `📡 [LLAMA-PARSER] Створення тимчасового файлу для підпису метаданих: ${fileName}`,
-    );
+    console.log(`📡 [LLAMA] Надсилання source_url: ${fileName}`);
 
-    // 1. Створюємо безпечний тимчасовий шлях у системній папці операційної системи (/tmp)
-    const tempDir = os.tmpdir();
-    tempFilePath = path.join(tempDir, `${Date.now()}-${fileName}`);
-
-    // 2. На одну секунду записуємо байти з R2 на диск сервера
-    fs.writeFileSync(tempFilePath, fileBuffer);
-
-    console.log(
-      "📡 [LLAMA-PARSER] Створення канонічного ReadStream та надсилання до Llama Cloud...",
-    );
-
-    // 3. 🔥 ПЕРЕДАЄМО СТРІМ — ТОЧНІСІНЬКО ЯК У ТВОЇХ ДОКАХ!
-    // Завдяки цьому Лама отримає легітимне ім'я файлу, розширення .pdf і не впаде за таймаутом.
-    const uploadResult = await client.files.create({
-      file: fs.createReadStream(tempFilePath),
-      purpose: "parse",
+    // Передаємо параметри строго за твоїм першим скриншотом документації
+    const job = await client.parsing.create({
+      source_url: publicR2Url,
+      tier: "agentic",
+      version: "latest",
     });
 
-    if (!uploadResult || !uploadResult.id) {
-      throw new Error("Llama Cloud SDK не повернув унікальний ID файлу.");
-    }
+    if (!job || !job.id)
+      throw new Error("Llama Cloud SDK не повернув ID завдання.");
 
-    console.log(
-      `✅ [LLAMA-PARSER УСПІХ] Файл успішно прийнято Ламою. ID: ${uploadResult.id}`,
-    );
-
-    // 4. Миттєво видаляємо тимчасовий файл за собою, щоб не засмічувати пам'ять сервера
-    if (fs.existsSync(tempFilePath)) {
-      fs.unlinkSync(tempFilePath);
-    }
-
-    return {
-      success: true,
-      jobId: uploadResult.id,
-    };
+    return { success: true, jobId: job.id };
   } catch (error: any) {
-    // Якщо сталася помилка, все одно гарантовано підчищаємо диск
-    if (tempFilePath && fs.existsSync(tempFilePath)) {
-      fs.unlinkSync(tempFilePath);
-    }
-    console.error("❌ [LLAMA-PARSER CRITICAL ERROR]:", error.message);
-    return {
-      success: false,
-      error:
-        error.message || "Помилка завантаження файлу через Llama Cloud SDK.",
-    };
+    console.error("❌ [LLAMA REQ ERROR]:", error.message);
+    return { success: false, error: error.message };
   }
 }
 
 /**
- * 🚀 ШІ-ХЕЛПЕР 2: Перевірка статусу черги та отримання результату
+ * 🛬 КРОК 2: Отримання статусу та даних завдання через канонічний метод GET
+ * Згідно з твоїм боковим меню, цей метод закриває і статус, і результат.
  */
 export async function getLlamaParsingResult(jobId: string) {
   try {
-    const result = await client.parsing.parse({
-      file_id: jobId,
-      tier: "agentic",
-      version: "latest",
-      expand: ["markdown"],
-    });
+    console.log(
+      `📥 [LLAMA-PARSER] Опитування завдання через GET за ID: ${jobId}`,
+    );
+
+    // 🔥 ВИПРАВЛЕНО ДЛЯ STAINLESS SDK: Передаємо чистий рядок, як вимагає TypeScript!
+    const result = await client.parsing.get(jobId);
 
     return result;
   } catch (error: any) {
-    console.error(`❌ [LLAMA-PARSER ERROR] Job ${jobId}:`, error.message);
+    console.error(`❌ [LLAMA GET ERROR] ${jobId}:`, error.message);
     throw error;
   }
 }

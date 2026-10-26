@@ -269,9 +269,11 @@ export async function verifyBookMetadataAction(
  * 🛫 ЕКШЕН 2: ГЕНЕРАЦІЯ ТОКЕНУ CLOUDFLARE R2
  * Повертаємо суворо 1 вхідний аргумент, як це було від початку!
  */
+// app/dashboard/upload/actions.ts
+
 export async function generatePresignedR2UrlAction(
   originalName: string,
-  fileHash: string, // 🔥 ПОВЕРНУЛИ 1 АРГУМЕНТ
+  fileHash: string, // 🔥 Використовуємо готовий хеш книги
 ): Promise<{
   success: boolean;
   uploadUrl?: string;
@@ -280,11 +282,12 @@ export async function generatePresignedR2UrlAction(
 }> {
   try {
     console.log(
-      `[ФЛОУ R2 🔗] Створення підписаного лінку через канонічний r2Client...`,
+      `[ФЛОУ R2 🔗] Створення фіксованого лінку для хешу: ${fileHash}`,
     );
 
-    // Використовуємо наш новий чистий стандарт папок
-    const fileKey = `books/source-pdf/${Date.now()}-${Math.random().toString(36).substring(2, 8)}.pdf`;
+    // 🔥 ЗАМІСТЬ DATE.NOW ТА RANDOM: називаємо файл його унікальним SHA-256 відбитком
+    // Завдяки цьому посилання на той самий підручник ЗАВЖДИ буде ідентичним!
+    const fileKey = `books/source-pdf/${fileHash}.pdf`;
 
     const command = new PutObjectCommand({
       Bucket: R2_BUCKET_NAME,
@@ -297,10 +300,7 @@ export async function generatePresignedR2UrlAction(
     return { success: true, uploadUrl, fileKey };
   } catch (error: any) {
     console.error("❌ [R2 PRESIGNED GENERATION ERROR]:", error.message);
-    return {
-      success: false,
-      error: "Не вдалося згенерувати токен доступу до сховища R2.",
-    };
+    return { success: false, error: "Не вдалося згенерувати токен доступу." };
   }
 }
 
