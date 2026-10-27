@@ -22,6 +22,7 @@ export async function uploadBookToLlamaCloudViaUrl(
     // Передаємо параметри строго за твоїм першим скриншотом документації
     const job = await client.parsing.create({
       source_url: publicR2Url,
+      // tier: "fast",
       tier: "agentic",
       version: "latest",
     });

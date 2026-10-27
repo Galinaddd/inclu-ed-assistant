@@ -1,7 +1,5 @@
-// 📂 Шлях до файлу: app/dashboard/_components/UploadBookModal.tsx
-"use client";
-
-import React, { useState, useId } from "react";
+import { createClient } from "@supabase/supabase-js";
+import React, { useState, useId, useRef, useEffect } from "react";
 import {
   X,
   UploadCloud,
@@ -47,7 +45,49 @@ export default function UploadBookModal({
   const [loadingStage, setLoadingStage] = useState<string>("");
   const [secondsElapsed, setSecondsElapsed] = useState<number>(0);
 
+  // 🛠️ Посилання на прихований input для гарантованого очищення від залишків файлів
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // 🛠️ Зберігаємо ID інтервалу для запобігання витоку пам'яті
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+
   const fileInputId = useId();
+
+  // 🧹 ФУНКЦІЯ ПОВНОГО ОЧИЩЕННЯ СТЕЙТІВ ВІД СМІТТЯ
+  const handleResetModalState = () => {
+    // Зупиняємо таймер, якщо він крутився
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    setFile(null);
+    setFileHash("");
+    setIsPending(false);
+    setErrorMessage("");
+    setLoadingStage("");
+    setSecondsElapsed(0);
+    setDragActive(false);
+
+    // Скидаємо значення інпуту у DOM, щоб можна було вибрати той самий файл повторно
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
+  // 🛡️ БЕЗПЕЧНЕ ЗАКРИТТЯ МОДАЛКИ (Викликати на хрестик / кнопку скасування)
+  const handleSafeClose = () => {
+    if (isProcessing) return; // Не даємо закрити під час активного завантаження
+    handleResetModalState();
+    onClose();
+  };
+
+  // Автоматичне підчищення таймера, якщо компонент розмонтується в процесі роботи
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+    };
+  }, []);
 
   if (!isOpen) return null;
 
@@ -104,7 +144,7 @@ export default function UploadBookModal({
 
     try {
       // ========================================================
-      // 🛫 КРОК 1: ОБЧИСЛЕННЯ ХЕШУ ТА КЛІЄНТСЬКА НАРІЗКА ПРЕВ'Ю (ПЕРШІ 5 СТОРІНОК)
+      // 🛫 КРОК 1: ОБЧИСЛЕННЯ ХЕШУ ТА КЛІЄНТСЬКА НАРІЗКА ПРЕВ'Ю
       // ========================================================
       setLoadingStage("Вирахування цифрового відбитку файлу (SHA-256)...");
       const computedHash = await calculateFileSHA256(file);
@@ -114,7 +154,7 @@ export default function UploadBookModal({
         "Створення полегшеного прев'ю для верифікації структури...",
       );
       const { PDFDocument } = await import("pdf-lib");
-      const fileArrayBuffer = await file.arrayBuffer();
+      const fileArrayBuffer = (await file.arrayBuffer()).slice(0);
 
       const srcDoc = await PDFDocument.load(fileArrayBuffer);
       const pageCount = srcDoc.getPageCount();
@@ -133,14 +173,14 @@ export default function UploadBookModal({
       });
 
       // ========================================================
-      // 🛡️ 🔥 КРОК 2: СУВOРА ВАЛІДАЦІЯ ПРЕВ'Ю НА РОУТІ (БЕЗ ВЕЛИКОГО ФАЙЛУ)
+      // 🛡️ КРОК 2: СУВOРА ВАЛІДАЦІЯ ПРЕВ'Ю НА РОУТІ (ЗАХИСТ ВІД СМІТТЯ)
       // ========================================================
       setLoadingStage(
         "Запуск крос-валідації метаданих та перевірка дублікатів у базі...",
       );
 
       const routePayload = new FormData();
-      routePayload.append("file", miniPreviewFile); // Тільки 5 сторінок!
+      routePayload.append("file", miniPreviewFile);
       routePayload.append("originalName", file.name);
       routePayload.append("fileHash", computedHash);
       routePayload.append("subjectId", subjectId);
@@ -152,7 +192,6 @@ export default function UploadBookModal({
         method: "POST",
         body: routePayload,
       });
-
       if (!routeResponse.ok) {
         const errorData = await routeResponse.json();
         throw new Error(
@@ -161,12 +200,9 @@ export default function UploadBookModal({
       }
 
       const routeResult = await routeResponse.json();
-
       if (routeResult.status === "DUPLICATE") {
         clearInterval(timerInterval);
-        setLoadingStage(
-          `💡 Цей підручник вже є в системі! Миттєво підключаємо його до кабінету програми...`,
-        );
+        setLoadingStage(`💡 Цей підручник вже є в системі! Підключаємо...`);
         setTimeout(() => {
           if (onSuccess && routeResult.data) onSuccess(routeResult.data);
           setIsPending(false);
@@ -177,16 +213,17 @@ export default function UploadBookModal({
       }
 
       // ========================================================
-      // 🛫 🔥 КРОК 3: КНИГА СХВАЛЕНА. ТІЛЬКИ ТЕПЕР ЙДЕМО В CLOUDFLARE R2
+      // 🛫 КРОК 3: ЗАВАНТАЖЕННЯ ОРИГІНАЛУ В CLOUDFLARE R2
       // ========================================================
       setLoadingStage(
         "Книга перевірена. Отримання токену хмари Cloudflare R2...",
       );
+
+      // Виклик твого Server Action для генерації лінку
       const r2TokenRes = await generatePresignedR2UrlAction(
         file.name,
         computedHash,
       );
-
       if (
         !r2TokenRes ||
         !r2TokenRes.success ||
@@ -194,8 +231,7 @@ export default function UploadBookModal({
         !r2TokenRes.fileKey
       ) {
         throw new Error(
-          r2TokenRes?.error ||
-            "Не вдалося згенерувати токен доступу до сховища R2.",
+          r2TokenRes?.error || "Не вдалося згенерувати токен доступу до R2.",
         );
       }
 
@@ -207,110 +243,101 @@ export default function UploadBookModal({
       const r2UploadResponse = await fetch(uploadUrl, {
         method: "PUT",
         headers: { "Content-Type": "application/pdf" },
-        body: file, // Важкий бінарник (41МБ+) летить в R2 прямо з браузера!
+        body: file,
       });
-
-      if (!r2UploadResponse.ok) {
-        throw new Error(
-          "Не вдалося завантажити оригінальний файл у хмарне сховище R2.",
-        );
-      }
+      if (!r2UploadResponse.ok)
+        throw new Error("Не вдалося завантажити оригінальний файл в R2.");
 
       // ========================================================
-      // 🚀 🔥 КРОК 4: РЕЄСТРАЦІЯ FILE_KEY В ЛАМУ (БЕЗ ВАЖКОГО ФАЙЛУ!)
+      // 🚀 🔥 КРОК 4: РЕЄСТРАЦІЯ В ЛАМИ ТА ЕФЕКТИВНИЙ ПОЛІНГ СТАТУСУ
       // ========================================================
-      setLoadingStage("Реєстрація файлу в чергу парсингу ШІ Llama Cloud...");
+      setLoadingStage(
+        "Ініціалізація нейромережі Llama Cloud через транзит зі сховища R2...",
+      );
 
       const registerPayload = new FormData();
-      registerPayload.append("originalName", file.name);
+      registerPayload.append("fileKey", fileKey);
       registerPayload.append("fileHash", computedHash);
-      registerPayload.append("fileKey", fileKey); // 🌟 ФІКС: Передаємо тільки легкий рядок-ключ R2!
+      registerPayload.append("originalName", file.name);
+      registerPayload.append("subjectId", subjectId);
+      registerPayload.append("schoolClass", String(schoolClass));
+      if (programId) registerPayload.append("programId", programId);
 
       const registerResponse = await fetch("/dashboard/upload", {
         method: "POST",
-        body: registerPayload, // Легкий fetch, який долітає миттєво
+        body: registerPayload,
       });
 
       if (!registerResponse.ok) {
         const errorData = await registerResponse.json();
         throw new Error(
-          errorData.error || "Помилка передачі лінку до ШІ роуту.",
+          errorData.error || "Бекенд не зміг ініціювати транзит в Llama Cloud.",
         );
       }
 
       const registerResult = await registerResponse.json();
+      const serverLlamaJobId = registerResult.llamaFileId;
 
-      if (!registerResult.llamaFileId) {
-        throw new Error(
-          "Сервер не повернув унікальний ідентифікатор завдання парсингу ШІ.",
-        );
-      }
-
-      const jobId = registerResult.llamaFileId;
-      const detectedYear = routeResult.detectedYear || new Date().getFullYear();
-
-      // ========================================================
-      // 🔄 КРОК 5: АСИНХРОННИЙ ЦИКЛ ОПИТУВАННЯ ЧЕРГИ ШІ ТА КОММІТ В БД
-      // ========================================================
-      let isFinished = false;
-      let attempts = 0;
-
-      while (!isFinished) {
-        attempts++;
-        if (attempts > 300) {
-          throw new Error(
-            "Перевищено ліміт часу очікування обробки підручника ШІ (25 хвилин).",
-          );
-        }
-
+      if (registerResult.status === "PROCESSING") {
         setLoadingStage(
-          `🤖 Нейромережа Llama Cloud аналізує сторінки підручника... (Етап: ${attempts})`,
+          "Нейромережа Llama Cloud аналізує сторінки підручника та формує структуру параграфів...",
         );
 
-        const checkRes = await checkLlamaStatusAndCommitAction({
-          jobId,
-          fileHash: computedHash,
-          subjectId,
-          schoolClass,
-          programId,
-          detectedYear,
-          fileName: file.name,
-          fileKey: fileKey,
+        // 🔄 ЛЕГКИЙ ПОЛІНГ: Чекаємо суворо статус SUCCESS від нашого нового розумного GET-роуту
+        const finalData = await new Promise<any>((resolve, reject) => {
+          const pollInterval = setInterval(async () => {
+            try {
+              // 🔥 Передаємо і jobId, і fileHash для автоматичної серверної адаптації
+              const res = await fetch(
+                `/dashboard/upload?jobId=${serverLlamaJobId}&fileHash=${computedHash}`,
+                { method: "GET", cache: "no-store" },
+              );
+              if (!res.ok)
+                throw new Error("Не вдалося отримати статус обробки.");
+              const statusData = await res.json();
+
+              if (statusData.status === "SUCCESS") {
+                clearInterval(pollInterval);
+                resolve(statusData.data); // Забираємо вже збережену й активовану сервером книгу
+              } else if (statusData.status === "FAILED") {
+                clearInterval(pollInterval);
+                reject(
+                  new Error(
+                    statusData.error ||
+                      "ШІ не зміг розпарсити або адаптувати підручник.",
+                  ),
+                );
+              }
+            } catch (err) {
+              clearInterval(pollInterval);
+              reject(err);
+            }
+          }, 5000);
         });
 
-        if (!checkRes.success) {
-          throw new Error(
-            checkRes.error ||
-              "Збій під час асинхронного комміту параграфів підручника.",
-          );
-        }
+        // ========================================================
+        // 🤖 🎉 ФІНАЛ: УСЕ ЗБЕРЕЖЕНО НА СЕРВЕРІ АВТОМАТИЧНО
+        // ========================================================
+        clearInterval(timerInterval);
+        setLoadingStage(
+          "🎉 Підручник успішно розпарсено, розділено на параграфи та збережено!",
+        );
+        await new Promise((res) => setTimeout(res, 2000));
 
-        if (checkRes.status === "PENDING") {
-          const delay = (ms: number) =>
-            new Promise((res) => setTimeout(res, ms));
-          await delay(5000); // Чекаємо 5 секунд і йдемо на нове коло перевірки
-        } else if (checkRes.status === "COMPLETED") {
-          isFinished = true;
-          clearInterval(timerInterval);
-          setLoadingStage(
-            "🎉 Підручник успішно розпарсено, розділено на параграфи та збережено!",
-          );
-
-          const delay = (ms: number) =>
-            new Promise((res) => setTimeout(res, ms));
-          await delay(2000);
-
-          if (onSuccess && checkRes.data) onSuccess(checkRes.data);
-          setIsPending(false);
-          setFile(null);
-          onClose();
-        }
+        if (onSuccess && finalData) onSuccess(finalData);
+        setIsPending(false);
+        setFile(null);
+        onClose();
+      } else {
+        throw new Error(
+          "Сервер повернув неочікуваний статус обробки контенту.",
+        );
       }
     } catch (error: any) {
       clearInterval(timerInterval);
       setIsPending(false);
       setErrorMessage(
-        error.message || "Сталася невідома помилка під час обробки підручника.",
+        error.message || "Сталася помилка під час обробки підручника.",
       );
       console.error("❌ [КРИТИЧНА ПОМИЛКА МОДАЛКИ]:", error);
     }
@@ -323,9 +350,10 @@ export default function UploadBookModal({
       aria-modal="true"
       aria-labelledby="modal-title"
     >
+      {/* Безпечне закриття по кліку на задній фон */}
       <div
         className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs transition-opacity"
-        onClick={onClose}
+        onClick={handleSafeClose}
       />
       <div className="bg-white border-2 border-slate-200 w-full max-w-lg rounded-3xl shadow-2xl relative z-10 overflow-hidden animate-in fade-in zoom-in-95 duration-200 text-left h-auto max-h-[95vh] flex flex-col">
         {/* Хедер модалки */}
@@ -343,7 +371,7 @@ export default function UploadBookModal({
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleSafeClose}
             className="h-8 w-8 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-slate-400 hover:text-slate-600 transition active:scale-95 cursor-pointer"
             aria-label="Закрити вікно"
             disabled={isProcessing}
@@ -370,6 +398,7 @@ export default function UploadBookModal({
             <input
               type="file"
               id={fileInputId}
+              ref={fileInputRef} // 🔥 Додано посилання для повного очищення інпуту від сміття у DOM
               accept=".pdf"
               onChange={handleFileChange}
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
@@ -455,7 +484,7 @@ export default function UploadBookModal({
         <div className="p-5 border-t border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row gap-3 shrink-0">
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleSafeClose} // 🔥 Замінено на безпечне очищення перед закриттям
             disabled={isProcessing}
             className="w-full sm:w-1/3 py-3 border-2 border-slate-200 text-slate-700 bg-white font-black text-xs uppercase tracking-wider rounded-xl transition cursor-pointer text-center active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
           >
