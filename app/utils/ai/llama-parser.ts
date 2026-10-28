@@ -12,6 +12,8 @@ export interface LlamaJobResult {
 /**
  * 🛫 КРОК 1: Ініціалізація асинхронного парсингу в хмарі Llama Cloud
  */
+// 📂 Шлях до файлу: app/utils/ai/llama-parser.ts
+
 export async function uploadBookToLlamaCloudViaUrl(
   publicR2Url: string,
   fileName: string,
@@ -19,12 +21,15 @@ export async function uploadBookToLlamaCloudViaUrl(
   try {
     console.log(`📡 [LLAMA] Надсилання source_url: ${fileName}`);
 
-    // Передаємо параметри строго за твоїм першим скриншотом документації
+    // Параметри строго відповідають структурі ParsingCreateParams із документації API v2
     const job = await client.parsing.create({
       source_url: publicR2Url,
-      // tier: "fast",
-      tier: "agentic",
+      tier: "cost_effective", // Збалансований мультимодальний режим
       version: "latest",
+      output_options: {
+        // Замовляємо збереження вирізаних фігур (layout) та вбудованих картинок (embedded)
+        images_to_save: ["layout", "embedded"],
+      },
     });
 
     if (!job || !job.id)
@@ -39,16 +44,19 @@ export async function uploadBookToLlamaCloudViaUrl(
 
 /**
  * 🛬 КРОК 2: Отримання статусу та даних завдання через канонічний метод GET
- * Згідно з твоїм боковим меню, цей метод закриває і статус, і результат.
+ * Додано параметр expand для отримання додаткових метаданих (текст, markdown, картинки)
  */
-export async function getLlamaParsingResult(jobId: string) {
+export async function getLlamaParsingResult(jobId: string, expand?: string[]) {
   try {
     console.log(
-      `📥 [LLAMA-PARSER] Опитування завдання через GET за ID: ${jobId}`,
+      `📥 [LLAMA-PARSER] Опитування завдання через GET за ID: ${jobId}. Expand: ${expand?.join(", ") || "none"}`,
     );
 
-    // 🔥 ВИПРАВЛЕНО ДЛЯ STAINLESS SDK: Передаємо чистий рядок, як вимагає TypeScript!
-    const result = await client.parsing.get(jobId);
+    // Передаємо jobId першим аргументом, а об'єкт конфігурації з query — другим
+    const result = await client.parsing.get(
+      jobId,
+      expand ? { expand } : undefined,
+    );
 
     return result;
   } catch (error: any) {
