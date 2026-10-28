@@ -1,6 +1,8 @@
 // 📂 Шлях до файлу: app/dashboard/upload/route.ts
+// ==================== ЧАСТИНА 1 ====================
+
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js"; // Чистий бекенд-клієнт без куків
+import { createClient } from "@supabase/supabase-js";
 import {
   parseMetadataFromFilename,
   validateNushMetadata,
@@ -8,13 +10,11 @@ import {
   checkFileHashOnly,
 } from "@/app/utils/supabase/upload-helpers";
 
-// Імпортуємо обидва хелпери структури з нашого файлу structure-builder
 import {
   buildBookStructure,
   processAndStreamBookStructure,
 } from "@/app/utils/supabase/upload-helpers/structure-builder";
 
-// Імпортуємо чисті функції неймінгу та утиліти завантаження (Додано uploadBufferToR2)
 import { uploadTextToR2, uploadBufferToR2 } from "@/app/utils/r2/r2-helpers";
 import { getBookRawMarkdownKey } from "@/app/utils/r2/naming";
 
@@ -23,10 +23,8 @@ import {
   uploadBookToLlamaCloudViaUrl,
   getLlamaParsingResult,
 } from "@/app/utils/ai/llama-parser";
-import { runTextAdaptationPipeline } from "@/app/utils/ai/adaptation-service";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
 
 interface ExtendedParsingResponse {
   job: {
@@ -39,242 +37,11 @@ interface ExtendedParsingResponse {
   } | null;
 }
 
-// 🔑 ЗАЛІЗОБЕТОННИЙ СУПЕРАДМІН ДЛЯ ОБХОДУ RLS (Чистий синглтон для роуту)
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
 );
 
-/**
- * 🔄 ЕНДПОЇНТ 1 (GET): Легкий полінг статусу + Швидка паралельна фіналізація
- */
-/**
- * 🔄 ЕНДПОЇНТ 1 (GET): Легкий полінг статусу + Швидка паралельна фіналізація
- */
-export async function GET(request: NextRequest) {
-  try {
-    const jobId = request.nextUrl.searchParams.get("jobId");
-    const fileHash = request.nextUrl.searchParams.get("fileHash");
-
-    if (!jobId || !fileHash) {
-      return NextResponse.json(
-        { success: false, error: "jobId та fileHash обов'язкові." },
-        { status: 400 },
-      );
-    }
-
-    const client = new LlamaCloud();
-    const parsing = await client.parsing.get(jobId);
-    const jobData = parsing as unknown as ExtendedParsingResponse;
-    const currentStatus = (jobData.job?.status || "").trim().toUpperCase();
-
-    console.log(
-      `📡 [GET POLL] Job: ${jobId} | Статус Лами: "${currentStatus}"`,
-    );
-
-    if (
-      ["PENDING", "PROCESSING", "RUNNING", "DEFAULT", ""].includes(
-        currentStatus,
-      )
-    ) {
-      return NextResponse.json({ success: true, status: "PROCESSING" });
-    }
-
-    if (["SUCCESS", "COMPLETED"].includes(currentStatus)) {
-      console.log(
-        "🎉 Лама завершила роботу! Запитуємо контент через expand...",
-      );
-
-      // Викликаємо оновлений хелпер, додаючи запит на пресайнд-посилання для картинок
-      const fullResponse = await getLlamaParsingResult(jobId, [
-        "markdown",
-        "images_content_metadata",
-      ]);
-
-      // Обходимо типізацію Stainless через any для залізобетонного читання полів з логу
-      const fullJobData = fullResponse as any;
-
-      const pages = fullJobData.markdown?.pages || [];
-      const fullMarkdown = pages
-        .map((page: any) => page.markdown || "")
-        .join("\n\n");
-
-      if (!fullMarkdown || fullMarkdown.trim().length < 10) {
-        throw new Error(
-          "Спарсений text від Llama Cloud порожній. Перевірте файл.",
-        );
-      }
-
-      // 💾 КРОК 1: Збереження повного тексту в R2 (Recovery бекап)
-      const rawMarkdownKey = getBookRawMarkdownKey(fileHash);
-      await uploadTextToR2(rawMarkdownKey, fullMarkdown);
-
-      // 🔮 КРОК 2: Текстова нарізка структури (Ваш оригінальний Regex-білдер)
-      const rawStructure = buildBookStructure(fullMarkdown);
-
-      // 🚀 КРОК 3: БЛИСКАВИЧНИЙ СТРІМІНГ ПАРАГРАФІВ В R2 (Через Promise.all)
-      const bookStructureJsonb = await processAndStreamBookStructure(
-        rawStructure,
-        fileHash,
-      );
-
-      // ====================================================
-      // 📸 КРОК 3.5: ПАКЕТНИЙ ІСТИННО ФОНОВИЙ СТРІМІНГ МЕДІА В R2 (ОСТАТОЧНА ФІКСАЦІЯ 🚀)
-      // ====================================================
-      const imagesMetadata = fullJobData.images_content_metadata;
-
-      if (
-        imagesMetadata &&
-        Array.isArray(imagesMetadata.images) &&
-        imagesMetadata.images.length > 0
-      ) {
-        console.log(
-          `📸 [EDGE-MEDIA] Виявлено медіафайлів від Лами: ${imagesMetadata.images.length}. Ініціалізація фонового пулу...`,
-        );
-
-        const runMediaUpload = async () => {
-          const BATCH_SIZE = 15; // Безпечний розмір пакета для ліміту в 50 сокетів AWS SDK
-          const images = imagesMetadata.images;
-
-          for (let i = 0; i < images.length; i += BATCH_SIZE) {
-            const batch = images.slice(i, i + BATCH_SIZE);
-            console.log(
-              `⏳ [R2-MEDIA] Фонове завантаження: з ${i} по ${Math.min(i + BATCH_SIZE, images.length)} з ${images.length}...`,
-            );
-
-            await Promise.all(
-              batch.map(async (imgObj: any) => {
-                const imageName = imgObj.filename;
-                const presignedUrl = imgObj.presigned_url;
-                const contentType = imgObj.content_type || "image/jpeg";
-
-                try {
-                  if (!presignedUrl || !imageName) return;
-
-                  // Канонічний Edge fetch безпосередньо в AWS S3 сховище Llama Cloud
-                  const imageResponse = await fetch(presignedUrl);
-                  if (!imageResponse.ok) {
-                    throw new Error(
-                      `Хмара LlamaCloud повернула помилку: ${imageResponse.status}`,
-                    );
-                  }
-
-                  const arrayBuffer = await imageResponse.arrayBuffer();
-                  const buffer = Buffer.from(arrayBuffer);
-
-                  // Чистий цільовий шлях до папки images/ в R2
-                  const r2Path = `books/content/${fileHash}/images/${imageName}`;
-
-                  // Передаємо спочатку КЛЮЧ (шлях), а другим аргументом — БУФЕР
-                  await uploadBufferToR2(r2Path, buffer, contentType);
-                } catch (mediaError: any) {
-                  console.error(
-                    `❌ [R2-MEDIA ERROR] Помилка файлу ${imageName || "unknown"}:`,
-                    mediaError.message,
-                  );
-                }
-              }),
-            );
-          }
-          console.log(
-            "🎉 [EDGE-MEDIA SUCCESS] Усі медіафайли успішно збережено в R2 у фоновому режимі!",
-          );
-        };
-
-        // 🔥 КРИТИЧНИЙ МОМЕНТ: Відриваємо виконання від головного запиту.
-        // Завдяки setImmediate роут віддасть NextResponse НЕГАЙНО, а цикл з картинками піде крутитися на фоні.
-        if (typeof (request as any).waitUntil === "function") {
-          (request as any).waitUntil(runMediaUpload());
-        } else {
-          setImmediate(() => {
-            runMediaUpload().catch((err) =>
-              console.error(
-                "⚠️ [EDGE-MEDIA CRITICAL] Збій фонового пулу:",
-                err.message,
-              ),
-            );
-          });
-        }
-      } else {
-        console.log(
-          "ℹ️ [EDGE-MEDIA] Медіафайлів для цієї книги не знайдено (масив порожній).",
-        );
-      }
-
-      // ====================================================
-      // 💾 КРОК 4: ОНОВЛЕННЯ JSON-МАПИ В ТАБЛИЦЮ public.books (Через Адміна)
-      // ====================================================
-      console.log(
-        "📝 Додаємо готову структуру книги в колонку book_structure таблиці public.books...",
-      );
-      const { data: updatedBook, error: bookError } = await supabaseAdmin
-        .from("books")
-        .update({
-          book_structure: bookStructureJsonb, // Записуємо сюди ТІЛЬКИ мапу текстових параграфів
-        })
-        .eq("file_hash", fileHash)
-        .select()
-        .maybeSingle();
-
-      if (bookError) {
-        throw new Error(
-          `Помилка оновлення book_structure в public.books: ${bookError.message}`,
-        );
-      }
-
-      // ====================================================
-      // 🛡️ ШІ-АДАПТАЦІЯ ТИМЧАСОВО ВИМКНЕНА (СТРУКТУРА СТВОРЮЄТЬСЯ ВЛАСНИМ REGEX-БІЛДЕРОМ)
-      // ====================================================
-      /*
-      try {
-        console.log("🤖 Запуск фонового пайплайну ШІ-адаптації...");
-        await runTextAdaptationPipeline({
-          userId: "system",
-          text: fullMarkdown,
-          userRole: "teacher",
-          subjectName: "Предмет НУШ",
-          contentType: "text",
-          clientChildData: { id: "system-upload" } as any,
-        });
-        console.log("✅ Пайплайн ШІ-адаптації успішно виконано.");
-      } catch (aiError: any) {
-        console.error(
-          "⚠️ [OPENAI WARNING] Помилка ШІ-адаптатора (перевірте баланс OpenAI):",
-          aiError.message,
-        );
-      }
-      */
-      console.log(
-        "ℹ️ [OPENAI INFO] Пайплайн ШІ-адаптації пропущено (вимкнено користувачем).",
-      );
-
-      console.log(
-        "✅ [УСПІХ] Структуру книги успішно записано, акордеон готовий!",
-      );
-      return NextResponse.json({
-        success: true,
-        status: "SUCCESS",
-        data: updatedBook || null,
-      });
-    }
-
-    return NextResponse.json({
-      success: true,
-      status: "FAILED",
-      error: jobData.job?.error_message || "Збій Лами на стороні хмари.",
-    });
-  } catch (error: any) {
-    console.error(`❌ [GET POLL CRITICAL ERROR]:`, error.message);
-    return NextResponse.json(
-      { success: false, status: "FAILED", error: error.message },
-      { status: 500 },
-    );
-  }
-}
-
-/**
- * 🛫 ЕНДПОЇНТ 2 (POST): Валідація ТА Первинне створення оригінальної книги (В обхід RLS)
- */
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
@@ -286,6 +53,7 @@ export async function POST(request: NextRequest) {
     const programId = (formData.get("programId") as string) || null;
     const clientFileKey = formData.get("fileKey") as string;
 
+    // 🔄 ЕТАП 2: Реєстрація посилання та запуск асинхронного воркера
     if (clientFileKey) {
       console.log(
         "⏳ [POST] Миттєва реєстрація публічного лінку R2 в Llama Cloud...",
@@ -306,14 +74,13 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // Відмиваємо назву підручника
+      const jobId = llamaResult.jobId;
       const cleanBookTitle = originalName
         .replace(/\.[^/.]+\$/, "")
         .replace(/[_-]/g, " ");
 
-      // 🔥 Інсертимо через залізобетонний supabaseAdmin в обхід RLS
       console.log(
-        `📝 Записуємо чисті метадані підручника в public.books (Bypass RLS): "${cleanBookTitle}"`,
+        `📝 Записуємо чисті метадані підручника в public.books: "${cleanBookTitle}"`,
       );
       const { error: insertError } = await supabaseAdmin.from("books").insert({
         file_hash: fileHash,
@@ -334,13 +101,149 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      // 🚀 АВТОНОМНИЙ ІЗОЛЬОВАНИЙ ФОНОВИЙ ПРОЦЕС
+      setImmediate(async () => {
+        try {
+          console.log(
+            `📡 [BACKGROUND PROCESS] Фоновий воркер стартував для Job: ${jobId}`,
+          );
+          const client = new LlamaCloud();
+          let isCompleted = false;
+          let attempts = 0;
+          const maxAttempts = 40;
+
+          while (!isCompleted && attempts < maxAttempts) {
+            attempts++;
+            const parsing = await client.parsing.get(jobId);
+            const currentStatus = ((parsing as any).job?.status || "")
+              .trim()
+              .toUpperCase();
+
+            console.log(
+              `⏳ [BACKGROUND PROCESS] Спроба ${attempts}/${maxAttempts}. Статус Лами: "${currentStatus}"`,
+            );
+
+            if (["SUCCESS", "COMPLETED"].includes(currentStatus)) {
+              isCompleted = true;
+              break;
+            }
+            if (["FAILED", "ERROR"].includes(currentStatus)) {
+              throw new Error(
+                (parsing as any).job?.error_message || "Llama parsing failed",
+              );
+            }
+            await new Promise((resolve) => setTimeout(resolve, 10000));
+          }
+
+          if (!isCompleted)
+            throw new Error(
+              "Перевищено ліміт часу очікування парсингу Llama Cloud.",
+            );
+
+          console.log(
+            "📦 [BACKGROUND PROCESS] Лама готова! Завантажуємо контент через expand...",
+          );
+          const fullResponse = await getLlamaParsingResult(jobId, [
+            "markdown",
+            "images_content_metadata",
+          ]);
+          const fullJobData = fullResponse as any;
+
+          const pages = fullJobData.markdown?.pages || [];
+          const fullMarkdown = pages
+            .map((page: any) => page.markdown || "")
+            .join("\n\n");
+
+          if (!fullMarkdown || fullMarkdown.trim().length < 10) {
+            throw new Error("Спарсений текст від Llama Cloud порожній.");
+          }
+
+          await uploadTextToR2(getBookRawMarkdownKey(fileHash), fullMarkdown);
+          const rawStructure = buildBookStructure(fullMarkdown);
+          const bookStructureJsonb = await processAndStreamBookStructure(
+            rawStructure,
+            fileHash,
+          );
+          // ==================== ЧАСТИНА 2 ====================
+          // 6. Контрольоване пакетне завантаження картинок (Батчі по 15 штук)
+          const imagesMetadata = fullJobData.images_content_metadata;
+          if (
+            imagesMetadata &&
+            Array.isArray(imagesMetadata.images) &&
+            imagesMetadata.images.length > 0
+          ) {
+            const BATCH_SIZE = 15;
+            const images = imagesMetadata.images;
+            console.log(
+              `📸 [BACKGROUND PROCESS] Виявлено медіафайлів: ${images.length}. Запуск пула завантаження...`,
+            );
+
+            for (let i = 0; i < images.length; i += BATCH_SIZE) {
+              const batch = images.slice(i, i + BATCH_SIZE);
+              console.log(
+                `⏳ [BACKGROUND R2-MEDIA] Пакет медіа: з ${i} по ${Math.min(i + BATCH_SIZE, images.length)} з ${images.length}...`,
+              );
+
+              await Promise.all(
+                batch.map(async (imgObj: any) => {
+                  const imageName = imgObj.filename;
+                  const presignedUrl = imgObj.presigned_url;
+                  try {
+                    if (!presignedUrl || !imageName) return;
+
+                    const imageResponse = await fetch(presignedUrl);
+                    if (!imageResponse.ok) return;
+
+                    const buffer = Buffer.from(
+                      await imageResponse.arrayBuffer(),
+                    );
+                    await uploadBufferToR2(
+                      `books/content/${fileHash}/images/${imageName}`,
+                      buffer,
+                      imgObj.content_type || "image/jpeg",
+                    );
+                  } catch (err) {
+                    // Пропускаємо дрібні мережеві помилки поодиноких картинок
+                  }
+                }),
+              );
+            }
+            console.log(
+              "🎉 [BACKGROUND PROCESS SUCCESS] Усі медіафайли успішно збережено в R2!",
+            );
+          }
+
+          // 7. Оновлюємо JSON-мапу в таблицю public.books (Це тригерне підписку на фронті)
+          console.log(
+            "📝 [BACKGROUND PROCESS] Фіналізація: оновлюємо book_structure в public.books...",
+          );
+          await supabaseAdmin
+            .from("books")
+            .update({ book_structure: bookStructureJsonb })
+            .eq("file_hash", fileHash);
+
+          console.log(
+            `🎉 [BACKGROUND PROCESS SUCCESS] Підручник ${fileHash} успішно та повністю зібрано!`,
+          );
+        } catch (bgError: any) {
+          console.error(
+            "❌ [BACKGROUND PROCESS CRITICAL ERROR]:",
+            bgError.message,
+          );
+        }
+      });
+
+      // Миттєва відповідь фронтенду: модалка відразу штатно закривається!
       return NextResponse.json({
         success: true,
         status: "PROCESSING",
-        llamaFileId: llamaResult.jobId,
+        llamaFileId: jobId,
       });
     }
 
+    // ====================================================
+    // 🔍 ЕТАП 1: Перші перевірки прев'ю файлу, метаданих НУШ та дедуплікація (Ваш оригінальний код)
+    // ====================================================
     const miniPreviewFile = formData.get("file") as File;
     const expectedSubjectName =
       (formData.get("subjectName") as string) || "Предмет НУШ";
@@ -353,8 +256,7 @@ export async function POST(request: NextRequest) {
     }
 
     const fromFilename = parseMetadataFromFilename(originalName);
-    const clientArrayBuffer = await miniPreviewFile.arrayBuffer();
-    const serverNodeBuffer = Buffer.from(clientArrayBuffer);
+    const serverNodeBuffer = Buffer.from(await miniPreviewFile.arrayBuffer());
     const safeServerFile = new File([serverNodeBuffer], originalName, {
       type: "application/pdf",
     });
@@ -390,7 +292,6 @@ export async function POST(request: NextRequest) {
       expectedSubjectName,
     );
 
-    // Передаємо наш адмінський клієнт у дедуплікатор
     const duplicateResult = await checkFileHashOnly(supabaseAdmin, {
       fileHash,
       subjectId,

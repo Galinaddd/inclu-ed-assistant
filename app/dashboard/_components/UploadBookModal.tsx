@@ -1,5 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import React, { useState, useId, useRef, useEffect } from "react";
+import { useRouter } from "next/navigation";
+
 import {
   X,
   UploadCloud,
@@ -51,6 +53,7 @@ export default function UploadBookModal({
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   const fileInputId = useId();
+  const router = useRouter();
 
   // 🧹 ФУНКЦІЯ ПОВНОГО ОЧИЩЕННЯ СТЕЙТІВ ВІД СМІТТЯ
   const handleResetModalState = () => {
@@ -151,7 +154,7 @@ export default function UploadBookModal({
       setFileHash(computedHash);
 
       setLoadingStage(
-        "Створення полегшеного прев'ю для верифікації структури...",
+        "Створення полегшеного прев'ю для верифікації microstructure...",
       );
       const { PDFDocument } = await import("pdf-lib");
       const fileArrayBuffer = (await file.arrayBuffer()).slice(0);
@@ -219,7 +222,6 @@ export default function UploadBookModal({
         "Книга перевірена. Отримання токену хмари Cloudflare R2...",
       );
 
-      // Виклик твого Server Action для генерації лінку
       const r2TokenRes = await generatePresignedR2UrlAction(
         file.name,
         computedHash,
@@ -249,7 +251,7 @@ export default function UploadBookModal({
         throw new Error("Не вдалося завантажити оригінальний файл в R2.");
 
       // ========================================================
-      // 🚀 🔥 КРОК 4: РЕЄСТРАЦІЯ В ЛАМИ ТА ЕФЕКТИВНИЙ ПОЛІНГ СТАТУСУ
+      // 🚀 🔥 КРОК 4: РЕЄСТРАЦІЯ ТА МИТТЄВИЙ ЗАПУСК ФОНОВОЇ ЗБІРКИ
       // ========================================================
       setLoadingStage(
         "Ініціалізація нейромережі Llama Cloud через транзит зі сховища R2...",
@@ -276,58 +278,25 @@ export default function UploadBookModal({
       }
 
       const registerResult = await registerResponse.json();
-      const serverLlamaJobId = registerResult.llamaFileId;
 
       if (registerResult.status === "PROCESSING") {
-        setLoadingStage(
-          "Нейромережа Llama Cloud аналізує сторінки підручника та формує структуру параграфів...",
-        );
-
-        // 🔄 ЛЕГКИЙ ПОЛІНГ: Чекаємо суворо статус SUCCESS від нашого нового розумного GET-роуту
-        const finalData = await new Promise<any>((resolve, reject) => {
-          const pollInterval = setInterval(async () => {
-            try {
-              // 🔥 Передаємо і jobId, і fileHash для автоматичної серверної адаптації
-              const res = await fetch(
-                `/dashboard/upload?jobId=${serverLlamaJobId}&fileHash=${computedHash}`,
-                { method: "GET", cache: "no-store" },
-              );
-              if (!res.ok)
-                throw new Error("Не вдалося отримати статус обробки.");
-              const statusData = await res.json();
-
-              if (statusData.status === "SUCCESS") {
-                clearInterval(pollInterval);
-                resolve(statusData.data); // Забираємо вже збережену й активовану сервером книгу
-              } else if (statusData.status === "FAILED") {
-                clearInterval(pollInterval);
-                reject(
-                  new Error(
-                    statusData.error ||
-                      "ШІ не зміг розпарсити або адаптувати підручник.",
-                  ),
-                );
-              }
-            } catch (err) {
-              clearInterval(pollInterval);
-              reject(err);
-            }
-          }, 5000);
-        });
-
-        // ========================================================
-        // 🤖 🎉 ФІНАЛ: УСЕ ЗБЕРЕЖЕНО НА СЕРВЕРІ АВТОМАТИЧНО
-        // ========================================================
+        // Старий важкий і зациклений блок полінгу GET повністю видалено!
         clearInterval(timerInterval);
-        setLoadingStage(
-          "🎉 Підручник успішно розпарсено, розділено на параграфи та збережено!",
-        );
-        await new Promise((res) => setTimeout(res, 2000));
 
-        if (onSuccess && finalData) onSuccess(finalData);
+        setLoadingStage(
+          "🚀 Книгу успішно зареєстровано! Сервер розпочав фоновий аналіз, нарізку параграфів та збір картинок...",
+        );
+
+        // Робимо невелику паузу у 3 секунди, щоб користувач встиг прочитати статус успіху
+        await new Promise((res) => setTimeout(res, 3000));
+
+        // Закриваємо модалку та очищуємо стейт
         setIsPending(false);
         setFile(null);
         onClose();
+
+        // Оновлюємо компоненти на сторінці (Next.js перепідтягне список книг із порожньою структурою)
+        router.refresh();
       } else {
         throw new Error(
           "Сервер повернув неочікуваний статус обробки контенту.",
