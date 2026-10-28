@@ -1,21 +1,30 @@
 // 📂 Шлях до файлу: app/dashboard/upload/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { createAdminServerConnection } from "@/app/utils/supabase/server";
+import { createClient } from "@supabase/supabase-js"; // Чистий бекенд-клієнт без куків
 import {
   parseMetadataFromFilename,
   validateNushMetadata,
   parsePdfTitlePage,
   checkFileHashOnly,
 } from "@/app/utils/supabase/upload-helpers";
-import LlamaCloud from "@llamaindex/llama-cloud";
 
+// Імпортуємо обидва хелпери структури з нашого файлу structure-builder
+import {
+  buildBookStructure,
+  processAndStreamBookStructure,
+} from "@/app/utils/supabase/upload-helpers/structure-builder";
+
+// Імпортуємо чисті функції неймінгу та утиліту завантаження
+import { uploadTextToR2 } from "@/app/utils/r2/r2-helpers";
+import { getBookRawMarkdownKey } from "@/app/utils/r2/naming";
+
+import LlamaCloud from "@llamaindex/llama-cloud";
 import { uploadBookToLlamaCloudViaUrl } from "@/app/utils/ai/llama-parser";
 import { runTextAdaptationPipeline } from "@/app/utils/ai/adaptation-service";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-// 🧠 Строгий інтерфейс відповіді строго за схемою з твоєї документації
 interface ExtendedParsingResponse {
   job: {
     id: string;
@@ -27,8 +36,14 @@ interface ExtendedParsingResponse {
   } | null;
 }
 
+// 🔑 ЗАЛІЗОБЕТОННИЙ СУПЕРАДМІН ДЛЯ ОБХОДУ RLS (Чистий синглтон для роуту)
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+);
+
 /**
- * 🔄 ЕНДПОЇНТ 1 (GET): Легкий полінг статусу + Автоматична важка фіналізація
+ * 🔄 ЕНДПОЇНТ 1 (GET): Легкий полінг статусу + Швидка паралельна фіналізація
  */
 export async function GET(request: NextRequest) {
   try {
@@ -43,8 +58,6 @@ export async function GET(request: NextRequest) {
     }
 
     const client = new LlamaCloud();
-
-    // 1. Швидкий запит статусу черги (без expand, щоб не вантажити мережу)
     const parsing = await client.parsing.get(jobId);
     const jobData = parsing as unknown as ExtendedParsingResponse;
     const currentStatus = (jobData.job?.status || "").trim().toUpperCase();
@@ -53,7 +66,6 @@ export async function GET(request: NextRequest) {
       `📡 [GET POLL] Job: ${jobId} | Статус Лами: "${currentStatus}"`,
     );
 
-    // Якщо Лама все ще в процесі обробки — тримаємо полінг
     if (
       ["PENDING", "PROCESSING", "RUNNING", "DEFAULT", ""].includes(
         currentStatus,
@@ -62,17 +74,14 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: true, status: "PROCESSING" });
     }
 
-    // 2. Якщо Лама відповіла SUCCESS або COMPLETED — стягуємо текст з expand строго за твоїм лінком доків!
     if (["SUCCESS", "COMPLETED"].includes(currentStatus)) {
       console.log(
         "🎉 Лама завершила роботу! Запитуємо контент через expand...",
       );
 
-      // 🔥 СУВOРО ЗА ДОКУМЕНТАЦІЄЮ: Передаємо параметри розширення другим аргументом
       const fullResponse = await client.parsing.get(jobId, {
         expand: ["markdown"],
       });
-
       const fullJobData = fullResponse as unknown as ExtendedParsingResponse;
       const pages = fullJobData.markdown?.pages || [];
       const fullMarkdown = pages
@@ -85,34 +94,68 @@ export async function GET(request: NextRequest) {
         );
       }
 
-      console.log(
-        `[GET] Текст успішно витягнуто (${fullMarkdown.length} симв.). Запуск ШІ-адаптора НУШ...`,
+      // 💾 КРОК 1: Збереження повного тексту в R2 (Recovery бекап)
+      const rawMarkdownKey = getBookRawMarkdownKey(fileHash);
+      await uploadTextToR2(rawMarkdownKey, fullMarkdown);
+
+      // 🔮 КРОК 2: Текстова нарізка структури (Ваш оригінальний Regex-білдер)
+      const rawStructure = buildBookStructure(fullMarkdown);
+
+      // 🚀 КРОК 3: БЛИСКАВИЧНИЙ СТРІМІНГ ПАРАГРАФІВ В R2 (Через Promise.all)
+      const bookStructureJsonb = await processAndStreamBookStructure(
+        rawStructure,
+        fileHash,
       );
 
-      await runTextAdaptationPipeline({
-        userId: "system",
-        text: fullMarkdown,
-        userRole: "teacher",
-        subjectName: "Предмет НУШ",
-        contentType: "text",
-        clientChildData: { id: "system-upload" } as any,
-      });
-
-      const supabase = await createAdminServerConnection();
-
-      // Активуємо книгу в системі
-      const { data: updatedBook } = await supabase
-        .from("textbooks")
-        .update({ status: "COMPLETED" })
+      // ====================================================
+      // 💾 КРОК 4: ОНОВЛЕННЯ JSON-МАПИ В ТАБЛИЦЮ public.books (Через Адміна)
+      // ====================================================
+      console.log(
+        "📝 Додаємо готову структуру книги в колонку book_structure таблиці public.books...",
+      );
+      const { data: updatedBook, error: bookError } = await supabaseAdmin
+        .from("books")
+        .update({
+          book_structure: bookStructureJsonb,
+        })
         .eq("file_hash", fileHash)
         .select()
-        .single();
+        .maybeSingle();
 
-      console.log("✅ [УСПІХ] Книгу повністю адаптовано та збережено!");
+      if (bookError) {
+        throw new Error(
+          `Помилка оновлення book_structure в public.books: ${bookError.message}`,
+        );
+      }
+
+      // ====================================================
+      // 🛡️ ОБГОРТАЄМО ШІ-АДАПТАЦІЮ, ЩОБ ЛІМІТИ OPENAI НЕ ЛАМАЛИ ЗАВАНТАЖЕННЯ КНИГИ
+      // ====================================================
+      try {
+        console.log("🤖 Запуск фонового пайплайну ШІ-адаптації...");
+        await runTextAdaptationPipeline({
+          userId: "system",
+          text: fullMarkdown,
+          userRole: "teacher",
+          subjectName: "Предмет НУШ",
+          contentType: "text",
+          clientChildData: { id: "system-upload" } as any,
+        });
+        console.log("✅ Пайплайн ШІ-адаптації успішно виконано.");
+      } catch (aiError: any) {
+        console.error(
+          "⚠️ [OPENAI WARNING] Помилка ШІ-адаптатора (перевірте баланс OpenAI):",
+          aiError.message,
+        );
+      }
+
+      console.log(
+        "✅ [УСПІХ] Структуру книги успішно записано, акордеон готовий!",
+      );
       return NextResponse.json({
         success: true,
         status: "SUCCESS",
-        data: updatedBook,
+        data: updatedBook || null,
       });
     }
 
@@ -131,11 +174,10 @@ export async function GET(request: NextRequest) {
 }
 
 /**
- * 🛫 ЕНДПОЇНТ 2 (POST): Валідація прев'ю ТА Миттєвий транзит source_url
+ * 🛫 ЕНДПОЇНТ 2 (POST): Валідація ТА Первинне створення оригінальної книги (В обхід RLS)
  */
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createAdminServerConnection();
     const formData = await request.formData();
 
     const fileHash = formData.get("fileHash") as string;
@@ -165,14 +207,33 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      await supabase.from("textbooks").insert({
+      // Відмиваємо назву підручника
+      const cleanBookTitle = originalName
+        .replace(/\.[^/.]+\$/, "")
+        .replace(/[_-]/g, " ");
+
+      // 🔥 Інсертимо через залізобетонний supabaseAdmin в обхід RLS
+      console.log(
+        `📝 Записуємо чисті метадані підручника в public.books (Bypass RLS): "${cleanBookTitle}"`,
+      );
+      const { error: insertError } = await supabaseAdmin.from("books").insert({
         file_hash: fileHash,
-        name: originalName,
+        title: cleanBookTitle,
         subject_id: subjectId,
         school_class: schoolClass,
         program_id: programId,
-        status: "PROCESSING",
+        publishing_year: 2026,
+        publisher: "Видавництво НУШ",
+        cover_url: "/images/default-book-cover.png",
+        parent_book_id: null,
+        book_structure: [],
       });
+
+      if (insertError) {
+        throw new Error(
+          `Помилка створення картки в таблиці books: ${insertError.message}`,
+        );
+      }
 
       return NextResponse.json({
         success: true,
@@ -230,12 +291,14 @@ export async function POST(request: NextRequest) {
       expectedSubjectName,
     );
 
-    const duplicateResult = await checkFileHashOnly(supabase, {
+    // Передаємо наш адмінський клієнт у дедуплікатор
+    const duplicateResult = await checkFileHashOnly(supabaseAdmin, {
       fileHash,
       subjectId,
       schoolClass,
       programId,
     });
+
     if (duplicateResult.isDuplicate) {
       return NextResponse.json({
         success: true,

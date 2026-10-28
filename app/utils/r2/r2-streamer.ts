@@ -133,11 +133,7 @@ export async function createBookAndStreamContentsToR2(
           .substring(node.start, node.end)
           .trim();
         const r2Key = generateSourceKey({
-          programId: params.programId || "unknown_program",
-          schoolClass: params.schoolClass,
-          subjectId: params.subjectId,
-          author: "pidruchnyk",
-          year: params.publishingYear,
+          fileHash: params.fileHash,
           paragraphNumber: node.paragraph_number,
         });
 
