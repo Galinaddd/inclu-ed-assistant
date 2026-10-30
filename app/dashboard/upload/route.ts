@@ -146,11 +146,17 @@ export async function POST(request: NextRequest) {
           const fullResponse = await getLlamaParsingResult(jobId, [
             "markdown",
             "images_content_metadata",
+            "items",
           ]);
+
+          // ==================== ОНОВЛЕНИЙ БЛОК ОБРОБКИ КОНТЕНТУ ====================
+          // ==================== ОНОВЛЕНИЙ І ЗШИТИЙ БЛОК В ROUTE.TS ====================
+          console.log(fullResponse);
           const fullJobData = fullResponse as any;
 
           const pages = fullJobData.markdown?.pages || [];
           const fullMarkdown = pages
+            .sort((a: any, b: any) => a.page_number - b.page_number)
             .map((page: any) => page.markdown || "")
             .join("\n\n");
 
@@ -158,12 +164,24 @@ export async function POST(request: NextRequest) {
             throw new Error("Спарсений текст від Llama Cloud порожній.");
           }
 
+          // Завантажуємо повну розмітку в R2 як бекап оригіналу документу
           await uploadTextToR2(getBookRawMarkdownKey(fileHash), fullMarkdown);
-          const rawStructure = buildBookStructure(fullMarkdown);
+
+          // 🟢 ОЦЕЙ РЯДОК РОБИТЬ МІСТ ДО УНІВЕРСАЛЬНОГО ПАРСЕРА:
+          // Ми витягуємо чистий масив сторінок із об'єкта items.pages, який прислала Лама
+          const rawStructure = buildBookStructure(
+            fullJobData.items?.pages || [],
+          );
+
+          // Стрімимо готові параграфи в сховище R2 та отримуємо мапу
           const bookStructureJsonb = await processAndStreamBookStructure(
             rawStructure,
             fileHash,
           );
+          // ============================================================================
+
+          // =========================================================================
+
           // ==================== ЧАСТИНА 2 ====================
           // 6. Контрольоване пакетне завантаження картинок (Батчі по 15 штук)
           const imagesMetadata = fullJobData.images_content_metadata;

@@ -101,7 +101,10 @@ export async function getBooksBySubject(
     const supabase = await createAdminServerConnection();
     const { data, error } = await supabase
       .from("books")
-      .select("id, title, publisher, publishing_year")
+      // 🟢 Додали book_structure для розблокування курсору та cover_url для реальних титулок
+      .select(
+        "id, title, publisher, publishing_year, book_structure, cover_url",
+      )
       .eq("subject_id", subjectId)
       .eq("school_class", schoolClass)
       .order("title", { ascending: true });

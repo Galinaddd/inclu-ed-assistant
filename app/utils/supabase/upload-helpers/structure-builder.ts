@@ -1,18 +1,36 @@
 // 📂 Шлях до файлу: app/utils/supabase/upload-helpers/structure-builder.ts
-
-import { ChapterStructure, ParagraphStructure } from "./types";
-// 📂 Шлях до файлу: app/utils/supabase/upload-helpers/structure-builder.ts
 import { generateSourceKey } from "@/app/utils/r2/naming";
 import { uploadTextToR2 } from "@/app/utils/r2/r2-helpers";
 
-// Ваши інтерфейси типів з app/utils/supabase/upload-helpers/types.ts
+export interface LlamaElement {
+  type: "heading" | "text" | "table" | "image" | string;
+  level?: number;
+  md?: string;
+  value?: string;
+}
+
+export interface LlamaPageItem {
+  page_number: number;
+  items: LlamaElement[];
+}
+
+export interface ParagraphStructure {
+  id: string;
+  title: string;
+  markdown_content: string;
+}
+
+export interface ChapterStructure {
+  id: string;
+  chapter: string;
+  paragraphs: ParagraphStructure[];
+}
 
 /**
- * 🔥 НОВА ЧИСТА ФУНКЦІЯ ДЛЯ СТРІМІНГУ ТА ФОРМУВАННЯ JSONB МАПИ
- * Приймає масив нарізаної структури, заливає файли в R2 і повертає чистий JSON для бази.
+ * 🔥 ФУНКЦІЯ ДЛЯ СТРІМІНГУ ТА ФОРМУВАННЯ JSONB МАПИ В SUPABASE
  */
 export async function processAndStreamBookStructure(
-  rawBookStructure: any[],
+  rawBookStructure: ChapterStructure[],
   fileHash: string,
 ): Promise<any[]> {
   let paragraphGlobalCounter = 1;
@@ -22,24 +40,20 @@ export async function processAndStreamBookStructure(
     const finalizedParagraphs = [];
 
     for (const paragraph of chapter.paragraphs) {
-      // 1. Генеруємо ключ суворо за концепцією: books/content/${fileHash}/paragraphs/paragraph_[номер].txt
       const paragraphR2Key = generateSourceKey({
         fileHash: fileHash,
         paragraphNumber: paragraphGlobalCounter,
       });
 
       console.log(
-        `🚀 [STRUCTURE-PROCESSOR] Стрімінг параграфа №${paragraphGlobalCounter} в R2...`,
+        `🚀 [R2-STREAM] Завантаження параграфа №${paragraphGlobalCounter} в R2...`,
       );
-
-      // 2. Завантажуємо оригінальний текст параграфа в Cloudflare R2
       await uploadTextToR2(paragraphR2Key, paragraph.markdown_content);
 
-      // 3. Формуємо поле для легкого JSONB без важкого тексту всередині
       finalizedParagraphs.push({
         id: paragraph.id,
-        title: paragraph.title,
-        r2_path: paragraphR2Key, // Фронтенд-акордеон стягне маркдаун звідси
+        title: paragraph.title || "Читати тему повністю",
+        r2_path: paragraphR2Key,
       });
 
       paragraphGlobalCounter++;
@@ -47,7 +61,7 @@ export async function processAndStreamBookStructure(
 
     finalizedStructure.push({
       id: chapter.id,
-      title: chapter.title,
+      title: chapter.chapter,
       paragraphs: finalizedParagraphs,
     });
   }
@@ -56,84 +70,182 @@ export async function processAndStreamBookStructure(
 }
 
 /**
- * Будує мапу (структуру) книги на основі маркдауну від Llama Cloud
+ * ⚡️ УНІВЕРСАЛЬНИЙ НІЖ: Будує ідеальну структуру книги для Букваря та Історії 11 класу
  */
-export function buildBookStructure(fullMarkdown: string): ChapterStructure[] {
-  if (!fullMarkdown) return [];
+export function buildBookStructure(
+  pageItems: LlamaPageItem[],
+): ChapterStructure[] {
+  if (!pageItems || pageItems.length === 0) return [];
+
+  // 1. Сортуємо фізичні сторінки підручника
+  const sortedPages = [...pageItems].sort(
+    (a, b) => a.page_number - b.page_number,
+  );
+
+  // 2. Зшиваємо елементи всіх сторінок в один плоский ланцюжок (кордони сторінок зникають)
+  const allElements: LlamaElement[] = [];
+  sortedPages.forEach((page) => {
+    if (page.items && Array.isArray(page.items)) {
+      allElements.push(...page.items);
+    }
+  });
+
+  // 3. Динамічно визначаємо рівні заголовків автора
+  let minHeadingLevel = 7;
+  let maxHeadingLevel = 0;
+  let hasHeadings = false;
+
+  allElements.forEach((el) => {
+    if (el.type === "heading" && el.level) {
+      hasHeadings = true;
+      if (el.level < minHeadingLevel) minHeadingLevel = el.level;
+      if (el.level > maxHeadingLevel) maxHeadingLevel = el.level;
+    }
+  });
+
+  // Фоллбек, якщо в книзі взагалі немає тегів заголовків
+  if (!hasHeadings) {
+    const fallbackText = allElements
+      .map((el) => el.md || el.value || "")
+      .join("\n\n")
+      .trim();
+    return [
+      {
+        id: crypto.randomUUID(),
+        chapter: "Основний розділ підручника",
+        paragraphs: [
+          {
+            id: crypto.randomUUID(),
+            title: "Читати підручник повністю",
+            markdown_content: fallbackText,
+          },
+        ],
+      },
+    ];
+  }
+
+  const chapterLevel = minHeadingLevel;
+  const isSingleLevel = minHeadingLevel === maxHeadingLevel;
+
+  // 4. Нарізаємо елементи на логічні блоки від заголовка до заголовка
+  interface BlockSlice {
+    title: string;
+    level: number;
+    collectedTexts: string[];
+  }
+
+  const slices: BlockSlice[] = [];
+  let currentSlice: BlockSlice | null = null;
+
+  const appendToCurrentSlice = (text: string) => {
+    if (!text) return;
+    if (!currentSlice) {
+      currentSlice = {
+        title: "Передмова та вступ",
+        level: chapterLevel + 1,
+        collectedTexts: [],
+      };
+      slices.push(currentSlice);
+    }
+    currentSlice.collectedTexts.push(text);
+  };
+
+  allElements.forEach((el) => {
+    if (el.type === "heading" && el.level !== undefined) {
+      const headingPrefix = "#".repeat(el.level);
+      const cleanTitle = (el.value || el.md || "Без назви")
+        .replace(/^[#\s]+/, "")
+        .trim();
+
+      currentSlice = {
+        title: cleanTitle,
+        level: el.level,
+        collectedTexts: [`${headingPrefix} ${cleanTitle}`],
+      };
+      slices.push(currentSlice);
+    } else {
+      appendToCurrentSlice(el.md || el.value || "");
+    }
+  });
 
   const structure: ChapterStructure[] = [];
-  const chunks = fullMarkdown.split(/^##\s+/gm);
+  let activeChapter: ChapterStructure | null = null;
 
-  const introChunk = chunks.shift()?.trim();
-  if (introChunk && introChunk.length > 50) {
-    structure.push({
-      chapter: "Титульна сторінка та передмова",
-      paragraphs: [
-        {
-          number: "0",
-          title: "Вступна інформація",
-          markdown_content: introChunk,
-        },
-      ],
+  const createParagraphObj = (
+    title: string,
+    texts: string[],
+  ): ParagraphStructure => {
+    const cleanTitle = title.replace(/<\/?[^>]+(>|$)/g, "").trim();
+    return {
+      id: crypto.randomUUID(),
+      title: cleanTitle,
+      markdown_content: texts.join("\n\n").trim(),
+    };
+  };
+
+  // СЦЕНАРІЙ А: Системна книга з ієрархією (Історія 11 класу: ## Розділ -> ### Параграф)
+  if (!isSingleLevel) {
+    slices.forEach((slice) => {
+      if (slice.level === chapterLevel) {
+        activeChapter = {
+          id: crypto.randomUUID(),
+          chapter: slice.title.replace(/<\/?[^>]+(>|$)/g, "").trim(),
+          paragraphs: [],
+        };
+        structure.push(activeChapter);
+
+        if (slice.collectedTexts.length > 1) {
+          activeChapter.paragraphs.push(
+            createParagraphObj("Ознайомлення з розділом", slice.collectedTexts),
+          );
+        }
+      } else {
+        if (!activeChapter) {
+          activeChapter = {
+            id: crypto.randomUUID(),
+            chapter: "Вступна частина підручника",
+            paragraphs: [],
+          };
+          structure.push(activeChapter);
+        }
+        activeChapter.paragraphs.push(
+          createParagraphObj(slice.title, slice.collectedTexts),
+        );
+      }
+    });
+  }
+  // СЦЕНАРІЙ Б: Лінійний підручник (Буквар 1 класу: Тільки один рівень заголовків)
+  else {
+    const ITEMS_PER_GROUP = 5;
+    slices.forEach((slice, idx) => {
+      if (idx % ITEMS_PER_GROUP === 0) {
+        let cleanChapterTitle = slice.title
+          .replace(/<\/?[^>]+(>|$)/g, "")
+          .trim();
+        if (
+          cleanChapterTitle.length <= 4 &&
+          cleanChapterTitle.includes(cleanChapterTitle.toLowerCase())
+        ) {
+          cleanChapterTitle = `Вивчаємо літеру: ${cleanChapterTitle}`;
+        } else {
+          cleanChapterTitle = `Блок: ${cleanChapterTitle}`;
+        }
+
+        activeChapter = {
+          id: crypto.randomUUID(),
+          chapter: cleanChapterTitle,
+          paragraphs: [],
+        };
+        structure.push(activeChapter);
+      }
+
+      if (activeChapter) {
+        activeChapter.paragraphs.push(
+          createParagraphObj(slice.title, slice.collectedTexts),
+        );
+      }
     });
   }
 
-  for (const chunk of chunks) {
-    const lines = chunk.split("\n");
-    const rawTitle = lines[0]?.trim();
-    const body = lines.slice(1).join("\n").trim();
-
-    if (!rawTitle) continue;
-
-    let chapterTitle = rawTitle.replace(/<\/?[^>]+(>|$)/g, "").trim();
-
-    if (
-      chapterTitle.length <= 4 &&
-      chapterTitle.includes(chapterTitle.toLowerCase())
-    ) {
-      chapterTitle = `Вивчаємо літеру: ${chapterTitle}`;
-    }
-
-    const subChunks = body.split(/^###\s+/gm);
-    const paragraphs: ParagraphStructure[] = [];
-
-    const mainBodyText = subChunks.shift()?.trim();
-    if (mainBodyText && mainBodyText.length > 5) {
-      paragraphs.push({
-        number: "1",
-        title: "Основна тема / Ознайомлення",
-        markdown_content: `## ${rawTitle}\n\n${mainBodyText}`,
-      });
-    }
-
-    let pCounter = paragraphs.length + 1;
-    for (const subChunk of subChunks) {
-      const subLines = subChunk.split("\n");
-      const subTitle = subLines[0]?.replace(/<\/?[^>]+(>|$)/g, "").trim();
-      const subBody = subLines.slice(1).join("\n").trim();
-
-      paragraphs.push({
-        number: `${pCounter++}`,
-        title: subTitle || "Підтема",
-        markdown_content: `### ${subLines[0]}\n\n${subBody}`,
-      });
-    }
-
-    if (paragraphs.length === 0 && body.length > 0) {
-      paragraphs.push({
-        number: "1",
-        title: "Читати повністю",
-        markdown_content: `## ${rawTitle}\n\n${body}`,
-      });
-    }
-
-    if (paragraphs.length > 0) {
-      structure.push({
-        chapter: chapterTitle,
-        paragraphs: paragraphs,
-      });
-    }
-  }
-
-  return structure;
+  return structure.filter((ch) => ch.paragraphs.length > 0);
 }

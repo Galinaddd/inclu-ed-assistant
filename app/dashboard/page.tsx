@@ -6,12 +6,10 @@ import {
   getSubjectsByChild,
   getBooksBySubject,
   getParagraphsByBook,
-  // getSourceParagraphContent,
-  adaptMaterialAction, // Імпортуємо ШІ-екшен прямо сюди
+  adaptMaterialAction,
 } from "./actions";
 
 import { downloadTextFromR2 } from "../utils/r2/r2-helpers";
-// ... (імпорти компонентів та інтерфейси ChildProfile, SubjectData, BookData, ParagraphData залишаються без змін)
 
 import UploadBookModal from "./_components/UploadBookModal";
 import SubjectSelector from "./_components/SubjectSelector";
@@ -29,7 +27,6 @@ interface ChildProfile {
   school_class: number | null;
   program_id: string | null;
   ref_diagnoses?: {
-    // ✨ Вчимо клієнт бачити і code, і title
     code: string;
     title: string;
   } | null;
@@ -47,6 +44,7 @@ interface BookData {
   title: string;
   publisher: string | null;
   publishing_year: number | null;
+  book_structure?: any;
 }
 
 interface ParagraphData {
@@ -78,7 +76,7 @@ export default function DashboardPage() {
   );
   const [loadingParagraphs, setLoadingParagraphs] = useState(false);
 
-  // ✨ Чисті стейти для передачі у форму (State Lifting)
+  // Чисті стейти для передачі у форму (State Lifting)
   const [extractedText, setExtractedText] = useState("");
   const [loadingTextFromR2, setLoadingTextFromR2] = useState(false);
   const [aiResponse, setAiResponse] = useState<string>("");
@@ -88,7 +86,6 @@ export default function DashboardPage() {
   const [isPending, startTransition] = useTransition();
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [userRole, setUserRole] = useState<"teacher" | "family">("family");
-
   // 1. Дебаг профілю користувача
   useEffect(() => {
     const debugDatabase = async () => {
@@ -103,7 +100,7 @@ export default function DashboardPage() {
           .maybeSingle();
         console.log("=== ЧИСТИЙ ДЕБАГ ДАШБОРДУ В БРАУЗЕРІ ===", profile);
         if (profile?.role) {
-          setUserRole(profile.role as "teacher" | "family"); // ✨ Зберігаємо роль у пам'ять
+          setUserRole(profile.role as "teacher" | "family");
         }
       }
     };
@@ -111,7 +108,6 @@ export default function DashboardPage() {
   }, [supabase]);
 
   // 2. Завантаження карток дітей
-  // ✨ ОНОВЛЕНИЙ БЛОК ЗАВАНТАЖЕННЯ ДІТЕЙ У app/dashboard/page.tsx
   useEffect(() => {
     const fetchChildrenData = async () => {
       try {
@@ -120,7 +116,6 @@ export default function DashboardPage() {
         } = await supabase.auth.getSession();
         if (!session?.user) return;
 
-        // Підтягуємо і code, і title з ref_diagnoses за один реляційний запит
         const { data, error } = await supabase
           .from("children_profiles")
           .select("*, ref_diagnoses(code, title)")
@@ -140,6 +135,33 @@ export default function DashboardPage() {
     };
     fetchChildrenData();
   }, [supabase]);
+
+  // ✨ Колбек для синхронізації книг та активації при фоновому оновленні через Realtime
+  const handleBookUpdate = (updatedBook: BookData & { _deleted?: boolean }) => {
+    // 🟢 Якщо прийшла подія видалення — миттєво викидаємо книгу зі стейту
+    if (updatedBook._deleted) {
+      setBooks((prevBooks) => prevBooks.filter((b) => b.id !== updatedBook.id));
+
+      // Якщо видалена книга була активною — скидаємо вибір
+      setActiveBook((currentActive) =>
+        currentActive?.id === updatedBook.id ? null : currentActive,
+      );
+      return;
+    }
+
+    // Стара логіка оновлення структури книги
+    setBooks((prevBooks) =>
+      prevBooks.map((b) =>
+        b.id === updatedBook.id ? { ...b, ...updatedBook } : b,
+      ),
+    );
+
+    setActiveBook((currentActive) =>
+      currentActive?.id === updatedBook.id
+        ? { ...currentActive, ...updatedBook }
+        : currentActive,
+    );
+  };
 
   // 3. Динамічний фетч предметів
   useEffect(() => {
@@ -168,10 +190,6 @@ export default function DashboardPage() {
     });
   }, [activeChild]);
 
-  // 4. Динамічний фетч книг та подальші етапи завантаження (параграфи, R2 контент та обробка формуляра)
-  // [Повний код компонентів та логіки рендерингу лівої та правої панелей, включаючи виклики getBooksBySubject, getParagraphsByBook, downloadTextFromR2 та adaptMaterialAction]
-  // Скопіюйте повну реалізацію нижньої частини із вихідного файлу для збереження повної працездатності.
-
   // 4. Динамічний фетч книг
   useEffect(() => {
     if (!activeSubject || !activeChild?.school_class) {
@@ -193,40 +211,38 @@ export default function DashboardPage() {
         activeChild.school_class!,
       );
 
-      if (res.success) setBooks(res.data || []);
+      if (res.success) setBooks((res.data as BookData[]) || []);
 
       setLoadingBooks(false);
     });
   }, [activeSubject, activeChild]);
 
   // 5. Динамічний фетч параграфів (З урахуванням parent_book_id)
-  useEffect(() => {
-    if (!activeBook) {
-      setParagraphs([]);
-      setActiveParagraph(null);
-      return;
-    }
-    startTransition(async () => {
-      setLoadingParagraphs(true);
-      setActiveParagraph(null);
-      setExtractedText("");
-      setAiResponse("");
-      setAiErrorMessage(null);
+  // useEffect(() => {
+  //   if (!activeBook) {
+  //     setParagraphs([]);
+  //     setActiveParagraph(null);
+  //     return;
+  //   }
+  //   startTransition(async () => {
+  //     setLoadingParagraphs(true);
+  //     setActiveParagraph(null);
+  //     setExtractedText("");
+  //     setAiResponse("");
+  //     setAiErrorMessage(null);
 
-      const res = await getParagraphsByBook(activeBook.id);
-      if (res.success) setParagraphs(res.data);
-      setLoadingParagraphs(false);
-    });
-  }, [activeBook]);
+  //     const res = await getParagraphsByBook(activeBook.id);
+  //     if (res.success) setParagraphs(res.data as ParagraphData[]);
+  //     setLoadingParagraphs(false);
+  //   });
+  // }, [activeBook]);
 
-  // ✨ 6. АВТОМАТИЧНЕ СТЯГУВАННЯ ТЕКСТУ З R2 ПРИ КЛІКУ НА ПАРАГРАФ
-  // ✨ 6. АВТОМАТИЧНЕ СТЯГУВАННЯ ТЕКСТУ З R2 ПРИ КЛІКУ НА ПАРАГРАФ
+  // 6. АВТОМАТИЧНЕ СТЯГУВАННЯ ТЕКСТУ З R2 ПРИ КЛІКУ НА ПАРАГРАФ
   useEffect(() => {
     if (!activeParagraph) return;
     const fetchR2Content = async () => {
       setLoadingTextFromR2(true);
       try {
-        // Перевіряємо, чи в raw_text лежить посилання на md-файл в R2, і зчитуємо його
         if (
           activeParagraph.raw_text &&
           (activeParagraph.raw_text.startsWith("source-books") ||
@@ -248,7 +264,7 @@ export default function DashboardPage() {
     fetchR2Content();
   }, [activeParagraph]);
 
-  // ✨ 7. ГОЛОВНА БОЙОВА ФУНКЦІЯ ШІ-ОБРОБКИ ДЛЯ ФОРМИ
+  // 7. ГОЛОВНА БОЙОВА ФУНКЦІЯ ШІ-ОБРОБКИ ДЛЯ ФОРМИ
   const handleFormSubmit = async (formData: { text: string; tab: string }) => {
     if (!activeChild) return;
 
@@ -280,7 +296,6 @@ export default function DashboardPage() {
         });
 
         if (result.success && result.data) {
-          // ✨ ВИПРАВЛЕНО: Дістаємо чистий рядок тексту aiText замість об'єкта
           setAiResponse(result.data.aiText);
         } else {
           setAiErrorMessage(
@@ -294,7 +309,6 @@ export default function DashboardPage() {
       }
     });
   };
-
   return (
     <div className="bg-background font-sans text-foreground flex flex-col justify-between min-h-[calc(100vh-88px)]">
       <main className="max-w-6xl mx-auto px-4 md:px-6 py-4 flex-grow w-full grid grid-cols-1 lg:grid-cols-12 gap-6 relative z-10">
@@ -375,7 +389,6 @@ export default function DashboardPage() {
                 activeSubject={activeSubject}
                 setActiveSubject={setActiveSubject}
               />
-
               {/* Атом 2: Селектор підручників */}
               {activeSubject && (
                 <BookSelector
@@ -384,16 +397,16 @@ export default function DashboardPage() {
                   activeBook={activeBook}
                   setActiveBook={setActiveBook}
                   setIsUploadOpen={setIsUploadOpen}
+                  onBookUpdate={handleBookUpdate}
                 />
               )}
-
-              {/* Атом 3: Селектор глав та параграфів */}
+              {/* Атом 3: Селектор глав та параграфів (Акордеон на базі JSON) */}
               {activeBook && (
                 <ParagraphSelector
-                  paragraphs={paragraphs}
+                  bookStructure={activeBook.book_structure} // Передаємо JSON-структуру з книги
                   activeParagraph={activeParagraph}
                   setActiveParagraph={setActiveParagraph}
-                  loadingParagraphs={loadingParagraphs}
+                  loadingParagraphs={false} // З маленької літери! Дані вже є в активній книзі
                 />
               )}
 
@@ -417,7 +430,7 @@ export default function DashboardPage() {
         </div>
       </main>
 
-      {/* Глобальна модалка додавання підручника (Помилку ліквідовано завдяки subjectName) */}
+      {/* Глобальна модалка додавання підручника */}
       <UploadBookModal
         isOpen={isUploadOpen}
         onClose={() => setIsUploadOpen(false)}
